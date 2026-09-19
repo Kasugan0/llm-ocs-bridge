@@ -289,3 +289,29 @@ def test_cache_keys_include_evidence_configuration(settings):
         assert cache_module.answer_key(query, "search", settings) != base_answer_key
     settings = replace(base_settings, min_search_quality_score=0.6)
     assert cache_module.search_key(query, settings) != base_search_key
+
+
+def test_search_revision_invalidates_legacy_keys_even_with_old_env_version(settings):
+    settings = replace(settings, search_cache_version="v3")
+    query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+    legacy_search = cache_key(
+        "search",
+        *cache_module.question_cache_parts(query),
+        settings.search_result_limit,
+        settings.min_search_quality_score,
+        settings.search_cache_version,
+    )
+    legacy_answer = cache_key(
+        "answer",
+        *cache_module.question_cache_parts(query),
+        settings.openai_base_url,
+        settings.openai_model,
+        settings.search_result_limit,
+        settings.min_search_quality_score,
+        settings.max_evidence_bytes,
+        settings.prompt_version,
+        settings.search_cache_version,
+        "search",
+    )
+    assert cache_module.search_key(query, settings) != legacy_search
+    assert cache_module.answer_key(query, "search", settings) != legacy_answer

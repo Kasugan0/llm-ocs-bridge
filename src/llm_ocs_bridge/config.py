@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+SEARCH_REVISION = "v4"
+
 
 def _bool(values: Mapping[str, str | None], name: str, default: bool = False) -> bool:
     value = values.get(name)
@@ -196,7 +198,7 @@ def load_settings(
         max_error_message_length=_int(values, "MAX_ERROR_MESSAGE_LENGTH"),
         stats_recent_limit=_int(values, "STATS_RECENT_LIMIT"),
         prompt_version=_text(values, "PROMPT_VERSION") or "v1",
-        search_cache_version=_text(values, "SEARCH_CACHE_VERSION") or "v2",
+        search_cache_version=_text(values, "SEARCH_CACHE_VERSION") or SEARCH_REVISION,
         llm_fallback_enabled=_bool(values, "LLM_FALLBACK_ENABLED", True),
         min_search_quality_score=_float(
             values, "MIN_SEARCH_QUALITY_SCORE", minimum=0.0, maximum=1.0

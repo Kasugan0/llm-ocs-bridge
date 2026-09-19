@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
 from urllib.parse import urlparse
+
+from exa_py import AsyncExa
+from exa_py.api import Result
 
 from .config import Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
 from .questions import strip_option_label
-from .utils import normalize_text
 
 
 class ExaSearch:
@@ -17,19 +18,17 @@ class ExaSearch:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.api_key = settings.exa_api_key
-        self._client: Any | None = None
+        self._client: AsyncExa | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key and self.api_key.strip())
 
-    def _get_client(self) -> Any:
+    def _get_client(self) -> AsyncExa:
         api_key = (self.api_key or "").strip()
         if not api_key:
             raise RuntimeError("EXA_API_KEY is required")
         if self._client is None:
-            from exa_py import AsyncExa
-
             self._client = AsyncExa(api_key)
         return self._client
 
@@ -53,50 +52,56 @@ class ExaSearch:
         async with asyncio.timeout(self.settings.exa_timeout_seconds):
             response = await client.search(render_search_query(query), **kwargs)
 
-        raw_results = getattr(response, "results", []) or []
+        raw_results = response.results
         if limit is not None:
             raw_results = raw_results[:limit]
         results = self._map_results(raw_results)
-        results = [result for result in results if self._is_valid_result(result)]
-        score = self.score_results(query, results, limit)
+        terms = question_terms(query)
+        scored = [
+            (result, relevance)
+            for result in results
+            if is_valid_search_result(result)
+            and (
+                relevance := self._semantic_score(
+                    terms, f"{result.title} {result.snippet}"
+                )
+            )
+            > 0
+        ]
+        score = self.score_results(scored, limit)
         if score < self.settings.min_search_quality_score:
             return [], score
-        return results, score
+        return [result for result, _ in scored], score
 
     @staticmethod
-    def _map_results(raw_results: list[object]) -> list[SearchResult]:
+    def _map_results(raw_results: list[Result]) -> list[SearchResult]:
         results: list[SearchResult] = []
         for item in raw_results:
-            highlights = getattr(item, "highlights", None) or []
-            snippet = str(highlights[0]) if highlights else ""
+            snippet = "\n".join(
+                highlight.strip()
+                for highlight in item.highlights or []
+                if isinstance(highlight, str) and highlight.strip()
+            )
             results.append(
                 SearchResult(
-                    title=str(getattr(item, "title", "") or ""),
-                    url=str(getattr(item, "url", "") or ""),
+                    title=item.title or "",
+                    url=item.url,
                     snippet=snippet,
                     source="exa",
-                    published_at=str(
-                        getattr(item, "published_date", None)
-                        or getattr(item, "publishedDate", None)
-                        or ""
-                    ),
+                    published_at=item.published_date or "",
                 )
             )
         return results
 
     @staticmethod
-    def _is_valid_result(result: SearchResult) -> bool:
-        return is_valid_search_result(result)
-
-    @staticmethod
     def score_results(
-        query: OCSQuery,
-        results: list[SearchResult],
+        scored: list[tuple[SearchResult, float]],
         limit: int | None,
     ) -> float:
-        if not results or (limit is not None and limit <= 0):
+        if not scored or (limit is not None and limit <= 0):
             return 0.0
 
+        results = [result for result, _ in scored]
         count_score = 0.2 if limit is None else min(len(results) / limit, 1.0) * 0.2
         avg_len = sum(len(result.snippet) for result in results) / len(results)
         snippet_score = min(avg_len / 240, 1.0) * 0.2
@@ -105,10 +110,7 @@ class ExaSearch:
         )
         url_score *= 0.2
 
-        semantic_scores = [
-            ExaSearch._semantic_score(query, f"{result.title} {result.snippet}")
-            for result in results
-        ]
+        semantic_scores = [score for _, score in scored]
         average_semantic_score = sum(semantic_scores) / len(semantic_scores)
         if average_semantic_score == 0.0:
             return 0.0
@@ -120,13 +122,10 @@ class ExaSearch:
         return count_score + snippet_score + url_score + semantic_score + source_score
 
     @staticmethod
-    def _semantic_score(query: OCSQuery, text: str) -> float:
-        terms = question_terms(query)
+    def _semantic_score(terms: frozenset[str], text: str) -> float:
         if not terms:
             return 0.0
-        normalized = text.lower()
-        hits = sum(1 for term in terms if term.lower() in normalized)
-        return hits / len(terms)
+        return len(terms & _extract_terms(text)) / len(terms)
 
     @staticmethod
     def _source_score(url: str) -> float:
@@ -147,7 +146,59 @@ class ExaSearch:
         return 0.3
 
 
-_TERM_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]+")
+_TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*|\d+(?:\.\d+)?|[\u4e00-\u9fff]+")
+_STOP_TERMS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "and",
+        "or",
+        "with",
+        "by",
+        "from",
+        "what",
+        "which",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how",
+        "does",
+        "do",
+        "did",
+        "can",
+        "could",
+        "should",
+        "would",
+        "的",
+        "是",
+        "求",
+        "请",
+        "与",
+        "和",
+        "或",
+        "什么",
+        "哪个",
+        "哪些",
+        "下列",
+        "以下",
+        "正确",
+        "错误",
+        "选项",
+    ]
+)
 
 
 def render_search_query(query: OCSQuery) -> str:
@@ -161,14 +212,18 @@ def render_search_query(query: OCSQuery) -> str:
     return "\n".join(lines)
 
 
-def question_terms(query: OCSQuery) -> list[str]:
-    terms: list[str] = []
-    terms.extend(_extract_terms(query.title))
+def question_terms(query: OCSQuery) -> frozenset[str]:
+    terms = set(_extract_terms(query.title))
     for option in query.options:
-        terms.extend(_extract_terms(strip_option_label(option)))
-    return list(dict.fromkeys(term for term in terms if term))
+        terms.update(_extract_terms(strip_option_label(option)))
+    return frozenset(terms)
 
 
-def _extract_terms(text: str) -> list[str]:
-    terms = [normalize_text(term).lower() for term in _TERM_RE.findall(text)]
-    return [term for term in terms if len(term) > 1]
+def _extract_terms(text: str) -> frozenset[str]:
+    terms: set[str] = set()
+    for token in _TERM_RE.findall(text.lower()):
+        if "\u4e00" <= token[0] <= "\u9fff" and len(token) > 1:
+            terms.update(token[index : index + 2] for index in range(len(token) - 1))
+        else:
+            terms.add(token)
+    return frozenset(terms - _STOP_TERMS)

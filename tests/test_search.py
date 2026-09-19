@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from llm_ocs_bridge.models import OCSQuery, SearchResult
-from llm_ocs_bridge.search import ExaSearch
+from llm_ocs_bridge.search import ExaSearch, question_terms
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ def test_exa_search_uses_async_client(
     search = ExaSearch(replace(settings, exa_api_key="test-key"))
     client = object()
 
-    with patch("exa_py.AsyncExa", return_value=client) as constructor:
+    with patch("llm_ocs_bridge.search.AsyncExa", return_value=client) as constructor:
         assert search._get_client() is client
 
     constructor.assert_called_once_with("test-key")
@@ -128,14 +128,18 @@ def test_exa_search_score_results(
         ),
     ]
 
-    assert ExaSearch.score_results(query, good_results, 5) > 0.4
-    assert ExaSearch.score_results(query, [], 5) == 0.0
+    terms = question_terms(query)
+    scored = [
+        (result, ExaSearch._semantic_score(terms, result.snippet))
+        for result in good_results
+    ]
+    assert ExaSearch.score_results(scored, 5) > 0.4
+    assert ExaSearch.score_results([], 5) == 0.0
 
 
 def test_exa_search_score_results_with_zero_limit(
     settings,
 ):
-    query = OCSQuery(title="题目")
     results = [
         SearchResult(
             title="Result 1",
@@ -145,7 +149,7 @@ def test_exa_search_score_results_with_zero_limit(
         )
     ]
 
-    assert ExaSearch.score_results(query, results, 0) == 0.0
+    assert ExaSearch.score_results([(results[0], 1.0)], 0) == 0.0
 
 
 def test_exa_search_without_limit_does_not_send_num_results(settings, monkeypatch):
@@ -183,7 +187,8 @@ def test_exa_rejects_results_without_semantic_overlap(
         )
     ]
 
-    assert ExaSearch.score_results(query, results, None) == 0.0
+    assert ExaSearch._semantic_score(question_terms(query), results[0].snippet) == 0.0
+    assert ExaSearch.score_results([(results[0], 0.0)], None) == 0.0
 
 
 @pytest.mark.asyncio
@@ -226,3 +231,113 @@ async def test_exa_client_closes(
 
     assert http_client.is_closed
     assert search._client is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("title", "snippet", "usable"),
+    [
+        ("水的化学式是什么？", "水的化学式是 H2O。", True),
+        (
+            "What is the chemical formula of water?",
+            "The chemical formula of water is H2O.",
+            True,
+        ),
+        ("求 x^2 的导数", "d(x^2)/dx = 2x", True),
+        ("水的化学式是什么？", "园艺种植：胡萝卜需要肥沃土壤。" * 100, False),
+        (
+            "What is the chemical formula of water?",
+            "What is the best way to plant carrots?" * 100,
+            False,
+        ),
+        ("cat", "Education and dedication are important." * 100, False),
+        ("求 x^2 的导数", "Horticulture: plant carrots in fertile soil." * 100, False),
+    ],
+)
+async def test_relevance_corpus(settings, title, snippet, usable):
+    from exa_py.api import Result
+
+    client = Mock()
+    client.search = AsyncMock(
+        return_value=SimpleNamespace(
+            results=[
+                Result(
+                    url="https://example.com",
+                    id="sample",
+                    title="Reference",
+                    highlights=[snippet],
+                )
+            ]
+        )
+    )
+    search = ExaSearch(replace(settings, exa_api_key="synthetic-key"))
+    with patch.object(search, "_get_client", return_value=client):
+        results, _score = await search.search(OCSQuery(title=title), 5)
+    assert bool(results) is usable
+
+
+@pytest.mark.asyncio
+async def test_all_highlights_are_used_and_irrelevant_items_are_removed(
+    settings, monkeypatch
+):
+    from exa_py.api import Result
+
+    from llm_ocs_bridge import search as module
+
+    client = Mock()
+    client.search = AsyncMock(
+        return_value=SimpleNamespace(
+            results=[
+                Result(
+                    url="https://example.com",
+                    id="good",
+                    title="Water",
+                    highlights=["Introduction", "", "水的化学式是 H2O。", None],
+                ),
+                Result(
+                    url="https://unrelated.com",
+                    id="bad",
+                    title="Gardening",
+                    highlights=["Carrots " * 100],
+                ),
+            ]
+        )
+    )
+    terms = Mock(wraps=module.question_terms)
+    monkeypatch.setattr(module, "question_terms", terms)
+    search = ExaSearch(
+        replace(settings, exa_api_key="synthetic-key", min_search_quality_score=0)
+    )
+    with patch.object(search, "_get_client", return_value=client):
+        results, _score = await search.search(
+            OCSQuery(title="水的化学式是什么？"), None
+        )
+    assert len(results) == 1
+    assert results[0].snippet == "Introduction\n水的化学式是 H2O。"
+    terms.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_zero_quality_threshold_does_not_allow_zero_relevance(settings):
+    from exa_py.api import Result
+
+    client = Mock()
+    client.search = AsyncMock(
+        return_value=SimpleNamespace(
+            results=[
+                Result(
+                    url="https://example.com",
+                    id="bad",
+                    title="Gardening",
+                    highlights=["Carrots " * 100],
+                )
+            ]
+        )
+    )
+    search = ExaSearch(
+        replace(settings, exa_api_key="synthetic-key", min_search_quality_score=0)
+    )
+    with patch.object(search, "_get_client", return_value=client):
+        results, score = await search.search(OCSQuery(title="quantum mechanics"), None)
+    assert results == []
+    assert score == 0

@@ -6,7 +6,7 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from .config import Settings
+from .config import SEARCH_REVISION, Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
 from .storage import Database
 from .utils import normalize_text
@@ -255,6 +255,7 @@ def _canonicalize(value: object) -> Any:
 def answer_key(query: OCSQuery, mode: str, settings: Settings) -> str:
     return cache_key(
         "answer",
+        SEARCH_REVISION,
         *question_cache_parts(query),
         settings.openai_base_url,
         settings.openai_model,
@@ -270,6 +271,7 @@ def answer_key(query: OCSQuery, mode: str, settings: Settings) -> str:
 def search_key(query: OCSQuery, settings: Settings) -> str:
     return cache_key(
         "search",
+        SEARCH_REVISION,
         *question_cache_parts(query),
         settings.search_result_limit,
         settings.min_search_quality_score,
