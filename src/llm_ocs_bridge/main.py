@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 
+from llm_ocs_bridge.questions import normalize_query
+
 if TYPE_CHECKING:
     from .config import Settings, StorageSettings
 
@@ -166,7 +168,7 @@ async def _check_llm(settings: Settings) -> None:
 
     answerer = LLMAnswerer(settings)
     try:
-        await answerer.answer("一加一等于几？", (), "", [])
+        await answerer.answer(normalize_query("一加一等于几？", (), ""), [])
     finally:
         await answerer.aclose()
 

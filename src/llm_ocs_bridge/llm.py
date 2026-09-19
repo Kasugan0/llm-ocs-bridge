@@ -3,19 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 
 import httpx
 
 from .config import Settings
-from .models import SearchResult
-from .utils import (
-    format_options_for_prompt,
-    format_search_context,
-    normalize_answer_payload,
-    normalize_query,
-    validate_answer,
-)
+from .models import OCSQuery, SearchResult
+from .questions import allowed_option_labels, format_options_for_prompt
+from .utils import normalize_text, truncate_utf8
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -58,14 +53,11 @@ class LLMAnswerer:
 
     async def answer(
         self,
-        title: str,
-        options: str | Sequence[str],
-        question_type: str,
+        query: OCSQuery,
         evidence: list[SearchResult],
         on_attempt: AttemptHook | None = None,
     ) -> str:
-        normalized_options = normalize_query("", options, question_type).options
-        formatted_options = format_options_for_prompt(normalized_options)
+        formatted_options = format_options_for_prompt(query.options)
         evidence_text = format_search_context(
             evidence, self.settings.max_evidence_bytes
         )
@@ -73,9 +65,9 @@ class LLMAnswerer:
 
         for attempt in range(self.settings.max_llm_retries + 1):
             messages = self._build_messages(
-                title,
+                query.title,
                 formatted_options,
-                question_type,
+                query.question_type,
                 evidence_text,
                 previous_invalid_response,
             )
@@ -86,8 +78,8 @@ class LLMAnswerer:
                     raise
             else:
                 payload = self._parse_payload(raw)
-                answer = normalize_answer_payload(payload, question_type)
-                if validate_answer(answer, question_type, normalized_options):
+                answer = normalize_answer_payload(payload, query.question_type)
+                if validate_answer(answer, query.question_type, query.options):
                     return answer
                 if attempt == self.settings.max_llm_retries:
                     raise InvalidAnswerError("答案格式不合法")
@@ -229,3 +221,144 @@ class LLMAnswerer:
                 "content": json.dumps(data, ensure_ascii=False, separators=(",", ":")),
             },
         ]
+
+
+_OPTION_RE = re.compile(r"[A-H]")
+
+
+def format_search_context(
+    results: Iterable[SearchResult],
+    max_bytes: int | None = None,
+) -> str:
+    if max_bytes is not None and max_bytes <= 0:
+        return ""
+
+    if max_bytes is None:
+        lines: list[str] = []
+        for index, item in enumerate(results, start=1):
+            piece = [f"[{index}] {item.title}"]
+            if item.url:
+                piece.append(item.url)
+            if item.snippet:
+                piece.append(item.snippet)
+            lines.append("\n".join(piece))
+        return "\n\n".join(lines)
+
+    context = ""
+    for index, item in enumerate(results, start=1):
+        piece = [f"[{index}] {item.title}"]
+        if item.url:
+            piece.append(item.url)
+        if item.snippet:
+            piece.append(item.snippet)
+        candidate = "\n".join(piece)
+        prefix = "\n\n" if context else ""
+        remaining = max_bytes - len(context.encode("utf-8"))
+        if remaining <= len(prefix.encode("utf-8")):
+            break
+        chunk = truncate_utf8(prefix + candidate, remaining)
+        context += chunk
+        if chunk != prefix + candidate:
+            break
+    return context
+
+
+def normalize_answer_payload(payload: object, question_type: str) -> str:
+    if question_type == "single":
+        value = _pick_field(payload, "answer")
+        if not isinstance(value, str):
+            return ""
+        normalized = normalize_text(value).upper()
+        return normalized if _OPTION_RE.fullmatch(normalized) else ""
+
+    if question_type == "multiple":
+        tokens = _normalize_option_list(_pick_field(payload, "answers", "answer"))
+        return "#".join(tokens) if tokens else ""
+
+    if question_type == "judgement":
+        value = _pick_field(payload, "answer")
+        if isinstance(value, bool):
+            return "正确" if value else "错误"
+        if not isinstance(value, str):
+            return ""
+        normalized = normalize_text(value)
+        if normalized in {"正确", "错误"}:
+            return normalized
+        lower = normalized.lower()
+        if lower == "true":
+            return "正确"
+        if lower == "false":
+            return "错误"
+        return ""
+
+    if question_type == "completion":
+        value = _pick_field(payload, "answers")
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            return ""
+        if any(not isinstance(item, str) for item in value):
+            return ""
+        answers = [normalize_text(item) for item in value]
+        if not answers or any(not item or "#" in item for item in answers):
+            return ""
+        return answers[0] if len(answers) == 1 else "#".join(answers)
+
+    value = _pick_field(payload, "answer")
+    return normalize_text(value) if isinstance(value, str) else ""
+
+
+def validate_answer(
+    answer: str,
+    question_type: str,
+    options: Sequence[str] = (),
+) -> bool:
+    value = normalize_text(answer)
+    if not value:
+        return False
+
+    if question_type == "multiple":
+        tokens = value.split("#")
+        allowed = allowed_option_labels(options)
+        return bool(
+            allowed
+            and tokens
+            and all(_OPTION_RE.fullmatch(token) for token in tokens)
+            and len(tokens) == len(set(tokens))
+            and all(token in allowed for token in tokens)
+        )
+    if question_type == "single":
+        return bool(
+            _OPTION_RE.fullmatch(value) and value in allowed_option_labels(options)
+        )
+    if question_type == "judgement":
+        return value in {"正确", "错误"}
+    if question_type == "completion":
+        return all(part.strip() for part in value.split("#"))
+    return True
+
+
+def _pick_field(payload: object, *keys: str) -> object | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _normalize_option_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        normalized = normalize_text(value).upper()
+        tokens = normalized.split("#")
+        if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
+            return []
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        if any(not isinstance(item, str) for item in value):
+            return []
+        tokens = [normalize_text(item).upper() for item in value]
+        if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
+            return []
+    else:
+        return []
+    if len(tokens) != len(set(tokens)):
+        return []
+    return sorted(tokens)

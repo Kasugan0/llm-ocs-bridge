@@ -4,11 +4,8 @@ import httpx
 import pytest
 
 from llm_ocs_bridge.app import create_app
-from llm_ocs_bridge.utils import (
-    normalize_answer_payload,
-    sanitize_error,
-    validate_answer,
-)
+from llm_ocs_bridge.llm import normalize_answer_payload, validate_answer
+from llm_ocs_bridge.utils import sanitize_error
 
 
 @pytest.mark.parametrize(
@@ -47,10 +44,13 @@ def test_completion_cache_and_payload_share_blank_segment_rules():
 )
 async def test_non_ascii_access_token_is_rejected(settings, route, status):
     app = create_app(settings)
-    async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://test",
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client,
+    ):
         response = await client.get(route, headers=[(b"X-Access-Token", b"\xff")])
     assert response.status_code == status
     assert response.json()["code"] == 0

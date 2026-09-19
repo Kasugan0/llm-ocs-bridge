@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
+from collections.abc import Sequence
+from typing import Any
 
 import aiosqlite
 
+from .config import Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
 from .storage import AsyncSQLiteStore
-from .utils import serialize_options
+from .utils import normalize_text
 
 
 class SearchCacheStore(AsyncSQLiteStore):
@@ -94,6 +98,30 @@ class SearchCacheStore(AsyncSQLiteStore):
             await db.execute(
                 "DELETE FROM search_cache WHERE cache_key = ?", (cache_key,)
             )
+
+    async def recent(self, limit: int, title_limit: int) -> list[dict[str, object]]:
+        db = await self._db()
+        cursor = await db.execute(
+            """
+            SELECT query_title, query_type, provider, quality_score, created_at
+            FROM search_cache
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "title": str(row["query_title"])[:title_limit],
+                "question_type": str(row["query_type"]),
+                "provider": str(row["provider"]),
+                "quality_score": float(row["quality_score"]),
+                "created_at": int(row["created_at"]),
+            }
+            for row in rows
+        ]
 
 
 class AnswerCacheStore(AsyncSQLiteStore):
@@ -227,3 +255,55 @@ def decode_search_results(payload: str) -> list[SearchResult]:
         if is_valid_search_result(result):
             results.append(result)
     return results
+
+
+def serialize_options(options: Sequence[str]) -> str:
+    return "#".join(options)
+
+
+def question_cache_parts(query: OCSQuery) -> tuple[object, ...]:
+    return (query.title, list(query.options), query.question_type)
+
+
+def cache_key(*parts: object) -> str:
+    payload = _canonicalize(parts)
+    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _canonicalize(value: object) -> Any:
+    if isinstance(value, str):
+        return normalize_text(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_canonicalize(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _canonicalize(item)
+            for key, item in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    return value
+
+
+def answer_key(query: OCSQuery, mode: str, settings: Settings) -> str:
+    return cache_key(
+        "answer",
+        *question_cache_parts(query),
+        settings.openai_base_url,
+        settings.openai_model,
+        settings.search_result_limit,
+        settings.min_search_quality_score,
+        settings.max_evidence_bytes,
+        settings.prompt_version,
+        settings.search_cache_version,
+        mode,
+    )
+
+
+def search_key(query: OCSQuery, settings: Settings) -> str:
+    return cache_key(
+        "search",
+        *question_cache_parts(query),
+        settings.search_result_limit,
+        settings.min_search_quality_score,
+        settings.search_cache_version,
+    )

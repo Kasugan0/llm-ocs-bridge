@@ -1,15 +1,14 @@
-import importlib
 import os
 from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from llm_ocs_bridge.cache import encode_search_results
 from llm_ocs_bridge.config import load_settings
-from llm_ocs_bridge.models import OCSQuery, SearchResult
+from llm_ocs_bridge.llm import LLMAnswerer
+from llm_ocs_bridge.models import SearchResult
 
 AUTH_HEADERS = {"X-Access-Token": "test-access-token"}
 
@@ -93,7 +92,7 @@ def test_search_allows_llm_fallback_without_exa_key_when_enabled(monkeypatch):
             "set",
             new=AsyncMock(),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
 
         async def answer(*args, on_attempt, **kwargs):
@@ -135,7 +134,7 @@ def test_search_logs_error_on_search_failure(monkeypatch):
             "search",
             new=AsyncMock(side_effect=RuntimeError("boom_unique_marker")),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         response = client.post(
             "/search",
@@ -179,7 +178,7 @@ def test_search_blocks_empty_evidence_without_fallback(monkeypatch):
             "search",
             new=AsyncMock(return_value=([], 0.1)),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         response = client.post(
             "/search",
@@ -246,7 +245,7 @@ def test_search_returns_exa_header_on_live_hit(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
 
         async def answer(*args, on_attempt, **kwargs):
@@ -316,7 +315,7 @@ def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ) as mock_search,
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="A")
         first = client.post(
@@ -392,7 +391,7 @@ def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
             "search",
             new=AsyncMock(side_effect=[(evidence, 0.8), (evidence, 0.8)]),
         ) as mock_search,
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(side_effect=["A", "B"])
         first = client.post(
@@ -451,7 +450,7 @@ def test_search_sets_llm_fallback_header_without_evidence(monkeypatch):
             "set",
             new=AsyncMock(),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="A")
         response = client.post(
@@ -488,7 +487,7 @@ def test_search_sets_llm_fallback_header_on_search_failure(monkeypatch):
             "get",
             new=AsyncMock(return_value=None),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="A")
         response = client.post(
@@ -558,7 +557,7 @@ def test_stats_reports_search_success_and_llm_call(monkeypatch):
             "set",
             new=AsyncMock(),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
 
         async def answer(*args, on_attempt, **kwargs):
@@ -615,7 +614,7 @@ def test_stats_reports_fallback_call(monkeypatch):
             "set",
             new=AsyncMock(),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
 
         async def answer(*args, on_attempt, **kwargs):
@@ -666,7 +665,7 @@ def test_search_answer_cache_hit_has_no_provider_header(monkeypatch):
             "search",
             new=AsyncMock(),
         ) as search_provider,
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         response = client.post(
             "/search",
@@ -729,7 +728,7 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
             "set",
             new=AsyncMock(),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(side_effect=["A", "B"])
         first = client.post(
@@ -812,7 +811,7 @@ def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="A")
         response = client.post(
@@ -832,82 +831,6 @@ def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
     errors = stats.json()["recent_errors"]
     assert any("InvalidCachedAnswer" in item["error"] for item in errors)
     assert all("answer=H" not in item["error"] for item in errors)
-
-
-def test_cache_keys_include_evidence_configuration(settings):
-    app_module = importlib.import_module("llm_ocs_bridge.app")
-    query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
-    base_settings = settings
-    base_answer_key = app_module._answer_key(query, "search", settings)
-    base_search_key = app_module._search_key(query, settings)
-
-    answer_fields = {
-        "openai_base_url": "https://provider.example/v1",
-        "search_result_limit": 7,
-        "min_search_quality_score": 0.7,
-        "max_evidence_bytes": 2048,
-    }
-    for field, value in answer_fields.items():
-        settings = replace(base_settings, **{field: value})
-        assert app_module._answer_key(query, "search", settings) != base_answer_key
-
-    settings = replace(base_settings, min_search_quality_score=0.6)
-    assert app_module._search_key(query, settings) != base_search_key
-
-
-@pytest.mark.asyncio
-async def test_llm_calls_count_actual_http_attempts():
-    app_module = importlib.import_module("llm_ocs_bridge.app")
-    metrics = SimpleNamespace(incr=AsyncMock())
-
-    async def answer(*args, on_attempt, **kwargs):
-        await on_attempt()
-        await on_attempt()
-        return "A"
-
-    runtime = SimpleNamespace(
-        answerer=SimpleNamespace(answer=answer),
-        metrics_store=metrics,
-    )
-    query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
-
-    assert await app_module._answer_with_llm(runtime, query, [], False) == "A"
-    assert metrics.incr.await_args_list == [call("llm_calls"), call("llm_calls")]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "error_name", ["ResponseTooLargeError", "ProviderProtocolError"]
-)
-async def test_llm_protocol_failures_are_logged(error_name, settings):
-    app_module = importlib.import_module("llm_ocs_bridge.app")
-    llm_module = importlib.import_module("llm_ocs_bridge.llm")
-    error = getattr(llm_module, error_name)("provider failure")
-    runtime = SimpleNamespace(
-        settings=settings,
-        answerer=SimpleNamespace(answer=AsyncMock(side_effect=error)),
-        metrics_store=SimpleNamespace(incr=AsyncMock(), log_error=AsyncMock()),
-        answer_cache=SimpleNamespace(set=AsyncMock()),
-    )
-    query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
-
-    response = await app_module._respond_with_answer(
-        runtime,
-        query,
-        [],
-        "exa",
-        "search",
-        False,
-    )
-
-    assert response.status_code == 200
-    assert (
-        response.body
-        == b'{"code":0,"msg":"LLM\xe8\xb0\x83\xe7\x94\xa8\xe5\xa4\xb1\xe8\xb4\xa5"}'
-    )
-    runtime.metrics_store.log_error.assert_awaited_once_with(
-        "llm", error_name, "provider failure"
-    )
 
 
 def test_invalid_cached_search_payload_falls_through(monkeypatch):
@@ -962,7 +885,7 @@ def test_invalid_cached_search_payload_falls_through(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ) as mock_search,
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="A")
         response = client.post(
@@ -1044,9 +967,11 @@ def test_search_rejects_invalid_llm_answer(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
-        mock_answerer.return_value.answer = AsyncMock(return_value="不是A，是B")
+        answerer = LLMAnswerer(app.state.settings)
+        answerer._call_model = AsyncMock(return_value='{"answer":"不是A，是B"}')
+        mock_answerer.return_value = answerer
         response = client.post(
             "/search",
             json={
@@ -1083,7 +1008,7 @@ def test_search_logs_error_on_llm_missing_key(monkeypatch):
             new=AsyncMock(side_effect=[None, None]),
         ),
         patch(
-            "llm_ocs_bridge.app._get_answerer",
+            "llm_ocs_bridge.service._get_answerer",
             side_effect=MissingKeyError("OPENAI_API_KEY is required"),
         ),
     ):
@@ -1233,7 +1158,7 @@ def test_search_allows_empty_question_type(monkeypatch):
             "search",
             new=AsyncMock(return_value=(evidence, 0.8)),
         ),
-        patch("llm_ocs_bridge.app._get_answerer") as mock_answerer,
+        patch("llm_ocs_bridge.service._get_answerer") as mock_answerer,
     ):
         mock_answerer.return_value.answer = AsyncMock(return_value="开放式答案")
         response = client.post(

@@ -3,8 +3,9 @@ import importlib
 import os
 from dataclasses import replace
 
+from llm_ocs_bridge import cache as cache_module
+from llm_ocs_bridge.cache import cache_key
 from llm_ocs_bridge.models import OCSQuery, SearchResult
-from llm_ocs_bridge.utils import cache_key
 
 
 def test_answer_cache_key_isolates_prompt_version(
@@ -315,3 +316,23 @@ def test_metrics_sanitize_error_messages(settings, monkeypatch, tmp_path):
 
     settings = replace(settings, max_error_message_length=32)
     asyncio.run(run())
+
+
+def test_cache_keys_include_evidence_configuration(settings):
+    query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
+    base_settings = settings
+    base_answer_key = cache_module.answer_key(query, "search", settings)
+    base_search_key = cache_module.search_key(query, settings)
+
+    answer_fields = {
+        "openai_base_url": "https://provider.example/v1",
+        "search_result_limit": 7,
+        "min_search_quality_score": 0.7,
+        "max_evidence_bytes": 2048,
+    }
+    for field, value in answer_fields.items():
+        settings = replace(base_settings, **{field: value})
+        assert cache_module.answer_key(query, "search", settings) != base_answer_key
+
+    settings = replace(base_settings, min_search_quality_score=0.6)
+    assert cache_module.search_key(query, settings) != base_search_key

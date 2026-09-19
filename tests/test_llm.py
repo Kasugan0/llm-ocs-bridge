@@ -13,6 +13,7 @@ from llm_ocs_bridge.llm import (
     ResponseTooLargeError,
     TransientLLMError,
 )
+from llm_ocs_bridge.questions import normalize_query
 
 
 def test_parse_payload_markdown_fence(
@@ -54,7 +55,7 @@ async def test_answer_retries_until_valid_single(
         side_effect=['{"answer":"不是A，是B"}', '{"answer":"B"}']
     )
 
-    answer = await answerer.answer("题目", "A#B#C#D", "single", [])
+    answer = await answerer.answer(normalize_query("题目", "A#B#C#D", "single"), [])
 
     assert answer == "B"
 
@@ -68,7 +69,7 @@ async def test_answer_completion_requires_structured_answers(
         side_effect=['{"answer":"随便一段话"}', '{"answers":["第一空","第二空"]}']
     )
 
-    answer = await answerer.answer("题目____", "", "completion", [])
+    answer = await answerer.answer(normalize_query("题目____", "", "completion"), [])
 
     assert answer == "第一空#第二空"
 
@@ -80,7 +81,9 @@ async def test_answer_prompt_labels_unlabeled_options(
     answerer = LLMAnswerer(settings)
     answerer._call_model = AsyncMock(return_value='{"answer":"A"}')
 
-    answer = await answerer.answer("题目", "Apple#Banana", "single", [])
+    answer = await answerer.answer(
+        normalize_query("题目", "Apple#Banana", "single"), []
+    )
 
     assert answer == "A"
     messages = answerer._call_model.call_args.args[0]
@@ -95,7 +98,7 @@ async def test_answer_raises_value_error_after_retries_exhausted(
     answerer._call_model = AsyncMock(return_value='{"answer":"不是A，是B"}')
 
     with pytest.raises(InvalidAnswerError, match="答案格式不合法"):
-        await answerer.answer("题目", "A#B", "single", [])
+        await answerer.answer(normalize_query("题目", "A#B", "single"), [])
 
 
 @pytest.mark.asyncio
@@ -115,7 +118,7 @@ async def test_answer_uses_configured_retry_limit(
     answerer._call_model = AsyncMock(return_value='{"answer":"不是A，是B"}')
 
     with pytest.raises(llm_module.InvalidAnswerError, match="答案格式不合法"):
-        await answerer.answer("题目", "A#B", "single", [])
+        await answerer.answer(normalize_query("题目", "A#B", "single"), [])
 
     assert answerer._call_model.await_count == expected_attempts
 
@@ -226,7 +229,7 @@ async def test_answer_retries_transient_failures_with_exponential_backoff(
         ]
     )
 
-    assert await answerer.answer("题目", "A#B", "single", []) == "A"
+    assert await answerer.answer(normalize_query("题目", "A#B", "single"), []) == "A"
     assert answerer._call_model.await_count == 3
     assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
 
@@ -240,7 +243,7 @@ async def test_answer_does_not_retry_deterministic_failures(settings, error):
     answerer._call_model = AsyncMock(side_effect=error)
 
     with pytest.raises(type(error)):
-        await answerer.answer("题目", "A#B", "single", [])
+        await answerer.answer(normalize_query("题目", "A#B", "single"), [])
 
     assert answerer._call_model.await_count == 1
 

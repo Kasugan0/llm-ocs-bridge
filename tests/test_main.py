@@ -8,10 +8,9 @@ from dataclasses import replace
 import pytest
 
 from llm_ocs_bridge import main as main_module
-from llm_ocs_bridge.cache import AnswerCacheStore, SearchCacheStore
+from llm_ocs_bridge.cache import AnswerCacheStore, SearchCacheStore, cache_key
 from llm_ocs_bridge.main import _clear_cache
 from llm_ocs_bridge.models import OCSQuery
-from llm_ocs_bridge.utils import cache_key
 
 
 def _settings(tmp_path, **overrides):

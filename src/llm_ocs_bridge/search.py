@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 from urllib.parse import urlparse
 
 from .config import Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
-from .utils import question_terms, render_search_query
+from .questions import strip_option_label
+from .utils import normalize_text
 
 
 class ExaSearch:
@@ -143,3 +145,30 @@ class ExaSearch:
         if host.endswith(".org") or host.startswith("developer."):
             return 0.7
         return 0.3
+
+
+_TERM_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]+")
+
+
+def render_search_query(query: OCSQuery) -> str:
+    lines = [f"题目：{query.title}"]
+    if query.question_type:
+        lines.append(f"题型：{query.question_type}")
+    if query.options:
+        lines.append("选项：")
+        lines.extend(f"- {option}" for option in query.options)
+    lines.append("任务：搜索能直接判断正确答案的权威网页证据。")
+    return "\n".join(lines)
+
+
+def question_terms(query: OCSQuery) -> list[str]:
+    terms: list[str] = []
+    terms.extend(_extract_terms(query.title))
+    for option in query.options:
+        terms.extend(_extract_terms(strip_option_label(option)))
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _extract_terms(text: str) -> list[str]:
+    terms = [normalize_text(term).lower() for term in _TERM_RE.findall(text)]
+    return [term for term in terms if len(term) > 1]
