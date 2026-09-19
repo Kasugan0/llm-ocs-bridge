@@ -18,6 +18,10 @@ _PRUNABLE_TABLES = {
 }
 
 
+class PostCommitError(RuntimeError):
+    pass
+
+
 class AsyncSQLiteStore:
     _write_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
@@ -39,28 +43,26 @@ class AsyncSQLiteStore:
                     self.path,
                     timeout=settings.sqlite_busy_timeout_ms / 1000,
                 )
-                conn.row_factory = aiosqlite.Row
-                await conn.execute(
-                    f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}"
-                )
-                await conn.execute("PRAGMA journal_mode=WAL")
-                await conn.execute("PRAGMA synchronous=NORMAL")
-                await conn.execute("PRAGMA foreign_keys=ON")
-                await conn.commit()
-                self._conn = conn
                 try:
-                    await self._init_db()
+                    conn.row_factory = aiosqlite.Row
+                    await conn.execute(
+                        f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}"
+                    )
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.execute("PRAGMA synchronous=NORMAL")
+                    await conn.execute("PRAGMA foreign_keys=ON")
+                    await self._init_db(conn)
                     self._secure_file_permissions()
                     await self._enforce_capacity_locked(conn)
-                except Exception:
+                except BaseException:
                     await conn.close()
-                    self._conn = None
                     raise
+                self._conn = conn
 
     async def close(self) -> None:
-        if self._conn is None:
-            return
-        async with self._write_lock:
+        async with self._connect_lock, self._write_lock:
+            if self._conn is None:
+                return
             await self._conn.close()
             self._conn = None
             self._secure_file_permissions()
@@ -78,11 +80,16 @@ class AsyncSQLiteStore:
             try:
                 yield db
                 await db.commit()
-            except Exception:
+            except BaseException:
                 await db.rollback()
                 raise
-            self._secure_file_permissions()
-            await self._enforce_capacity_locked(db)
+            try:
+                self._secure_file_permissions()
+                await self._enforce_capacity_locked(db)
+            except Exception as exc:
+                raise PostCommitError(
+                    "Write committed; SQLite maintenance failed"
+                ) from exc
 
     def database_size_bytes(self) -> int:
         return sum(
@@ -90,27 +97,47 @@ class AsyncSQLiteStore:
         )
 
     async def _enforce_capacity_locked(self, db: aiosqlite.Connection) -> None:
-        while self.database_size_bytes() > settings.max_cache_bytes:
+        if self.database_size_bytes() <= settings.max_cache_bytes:
+            return
+        await self._checkpoint(db)
+        if self.database_size_bytes() <= settings.max_cache_bytes:
+            return
+        while await self._live_size_bytes(db) > settings.max_cache_bytes:
             rows = await self._oldest_rows(db)
             if not rows:
                 raise RuntimeError("SQLite database exceeds MAX_CACHE_BYTES")
-            for table, row_ids in self._group_rows(rows).items():
-                placeholders = ",".join("?" for _ in row_ids)
-                cursor = await db.execute(
-                    f"DELETE FROM {table} WHERE rowid IN ({placeholders})",
-                    row_ids,
-                )
-                await cursor.close()
-            await db.commit()
-            cursor = await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            await cursor.close()
-            cursor = await db.execute("VACUUM")
-            await cursor.close()
-            await db.commit()
-            cursor = await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            await cursor.close()
-            await db.commit()
-            self._secure_file_permissions()
+            try:
+                for table, row_ids in self._group_rows(rows).items():
+                    placeholders = ",".join("?" for _ in row_ids)
+                    async with db.execute(
+                        f"DELETE FROM {table} WHERE rowid IN ({placeholders})", row_ids
+                    ):
+                        pass
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        async with db.execute("VACUUM"):
+            pass
+        await self._checkpoint(db)
+        self._secure_file_permissions()
+        if self.database_size_bytes() > settings.max_cache_bytes:
+            raise RuntimeError("SQLite database exceeds MAX_CACHE_BYTES")
+
+    async def _checkpoint(self, db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cursor:
+            result = await cursor.fetchone()
+        if result[0]:
+            raise RuntimeError("SQLite checkpoint blocked by another connection")
+
+    async def _live_size_bytes(self, db: aiosqlite.Connection) -> int:
+        async with db.execute(
+            "SELECT (page_count - freelist_count) * page_size "
+            "FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()"
+        ) as cursor:
+            row = await cursor.fetchone()
+        shm = self._database_files()[2]
+        return int(row[0]) + (shm.stat().st_size if shm.exists() else 0)
 
     async def _oldest_rows(
         self,
@@ -173,5 +200,5 @@ class AsyncSQLiteStore:
                         f"Cannot secure SQLite file permissions: {path}"
                     ) from exc
 
-    async def _init_db(self) -> None:
+    async def _init_db(self, db: aiosqlite.Connection) -> None:
         raise NotImplementedError

@@ -23,8 +23,7 @@ _COUNTERS = (
 
 
 class MetricsStore(AsyncSQLiteStore):
-    async def _init_db(self) -> None:
-        db = await self._db()
+    async def _init_db(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS metric_counters (

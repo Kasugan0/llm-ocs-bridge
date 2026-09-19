@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import time
 
+import aiosqlite
+
 from .models import OCSQuery, SearchResult, is_valid_search_result
 from .storage import AsyncSQLiteStore
 from .utils import serialize_options
 
 
 class SearchCacheStore(AsyncSQLiteStore):
-    async def _init_db(self) -> None:
-        db = await self._db()
+    async def _init_db(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS search_cache (
@@ -96,8 +97,7 @@ class SearchCacheStore(AsyncSQLiteStore):
 
 
 class AnswerCacheStore(AsyncSQLiteStore):
-    async def _init_db(self) -> None:
-        db = await self._db()
+    async def _init_db(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS answer_cache (

@@ -212,6 +212,7 @@ def test_sqlite_capacity_prunes_oldest_cache_entry(tmp_path, monkeypatch):
         store = SearchCacheStore(path)
         await store.connect()
         try:
+            await store._checkpoint(await store._db())
             baseline = store.database_size_bytes()
             query = OCSQuery(title="题目", options=("A.1",), question_type="single")
             await store.set(
@@ -220,7 +221,7 @@ def test_sqlite_capacity_prunes_oldest_cache_entry(tmp_path, monkeypatch):
                 "exa",
                 0.8,
                 '[{"title":"Result","url":"http://example.com",'
-                '"snippet":"' + "x" * 10000 + '","source":"exa"}]',
+                '"snippet":"' + "x" * 20000 + '","source":"exa"}]',
                 "v2",
             )
             monkeypatch.setattr(
