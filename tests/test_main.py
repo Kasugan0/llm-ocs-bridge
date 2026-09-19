@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import os
 import sys
@@ -173,7 +172,7 @@ async def test_clear_cache_answer_scope(settings, tmp_path):
         await answer_cache.db.close()
 
 
-def test_help_works_with_invalid_environment(settings, monkeypatch, capsys):
+def test_help_works_with_invalid_environment(monkeypatch, capsys):
     monkeypatch.setenv("PORT", "invalid")
     with pytest.raises(SystemExit) as exc_info:
         main_module.run(["--help"])
@@ -193,7 +192,7 @@ def test_help_works_with_invalid_environment(settings, monkeypatch, capsys):
         (["clear-cache", "--help"], "清理范围，默认 all"),
     ],
 )
-def test_subcommand_help_is_chinese(settings, argv, expected, capsys):
+def test_subcommand_help_is_chinese(argv, expected, capsys):
     with pytest.raises(SystemExit) as exc_info:
         main_module.run(argv)
     assert exc_info.value.code == 0
@@ -204,7 +203,7 @@ def test_subcommand_help_is_chinese(settings, argv, expected, capsys):
     assert expected in output
 
 
-def test_check_fails_when_env_file_is_missing(settings, tmp_path, monkeypatch, capsys):
+def test_check_fails_when_env_file_is_missing(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert asyncio.run(main_module._check()) == 1
     captured = capsys.readouterr()
@@ -213,9 +212,7 @@ def test_check_fails_when_env_file_is_missing(settings, tmp_path, monkeypatch, c
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
-def test_check_fails_when_env_permissions_are_insecure(
-    settings, tmp_path, monkeypatch, capsys
-):
+def test_check_fails_when_env_permissions_are_insecure(tmp_path, monkeypatch, capsys):
     _env_file(tmp_path, 420)
     monkeypatch.chdir(tmp_path)
     assert asyncio.run(main_module._check()) == 1
@@ -224,7 +221,7 @@ def test_check_fails_when_env_permissions_are_insecure(
     assert "权限必须为 0600" in captured.err
 
 
-def test_check_reports_invalid_configuration(settings, tmp_path, monkeypatch, capsys):
+def test_check_reports_invalid_configuration(tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PORT", "invalid")
@@ -324,13 +321,13 @@ def test_check_redacts_provider_errors(settings, tmp_path, monkeypatch, capsys):
         ("::1", "http://[::1]:8009/search"),
     ],
 )
-def test_ocs_config_uses_connectable_host(settings, tmp_path, host, expected):
+def test_ocs_config_uses_connectable_host(tmp_path, host, expected):
     config = main_module._ocs_config(_settings(tmp_path, host=host))
     assert config[0]["url"] == expected
 
 
 def test_llm_check_closes_client_on_failure(settings, monkeypatch):
-    llm_module = importlib.import_module("llm_ocs_bridge.llm")
+    from llm_ocs_bridge import llm as llm_module
     closed = False
 
     class FakeAnswerer:
@@ -351,7 +348,7 @@ def test_llm_check_closes_client_on_failure(settings, monkeypatch):
 
 
 def test_exa_check_closes_client_on_failure(settings, monkeypatch):
-    search_module = importlib.import_module("llm_ocs_bridge.search")
+    from llm_ocs_bridge import search as search_module
     closed = False
 
     class FakeSearch:

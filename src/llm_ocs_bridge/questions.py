@@ -55,12 +55,11 @@ def _split_options(options: str | Sequence[str]) -> tuple[str, ...]:
 
 
 def allowed_option_labels(options: Sequence[str]) -> frozenset[str]:
-    labels: list[str] = []
+    labels: set[str] = set()
     for index, option in enumerate(options):
         match = _OPTION_LABEL_RE.match(option)
         label = match.group(1).upper() if match else chr(ord("A") + index)
-        if label not in labels:
-            labels.append(label)
+        labels.add(label)
     return frozenset(labels)
 
 
@@ -96,10 +95,7 @@ def _fields(
     if not isinstance(question_type_value, str):
         raise QuestionError("题型必须是字符串")
 
-    title = title_value
-    options = options_value
-    question_type = question_type_value
-    return title, options, question_type
+    return title_value, options_value, question_type_value
 
 
 def validate_query(query: OCSQuery, settings: Settings) -> None:

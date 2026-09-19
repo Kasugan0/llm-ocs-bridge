@@ -131,7 +131,6 @@ def _check_env_file() -> Path:
 def _load_settings(
     env_path: Path | None = None,
     *,
-    validate: bool,
     check: bool = False,
 ) -> Settings:
     try:
@@ -142,9 +141,8 @@ def _load_settings(
         )
 
         settings = load_settings(env_path)
-        if validate:
-            validator = validate_check_settings if check else validate_runtime_settings
-            validator(settings)
+        validator = validate_check_settings if check else validate_runtime_settings
+        validator(settings)
     except RuntimeError as exc:
         raise CheckError(str(exc)) from exc
     return settings
@@ -242,7 +240,7 @@ async def _check() -> int:
         env_path = _check_env_file()
         _status("OK", f"配置文件: {env_path}")
 
-        settings = _load_settings(env_path, validate=True, check=True)
+        settings = _load_settings(env_path, check=True)
         _status("OK", "配置格式与必填项")
 
         _check_cache_path(settings.cache_path)
@@ -291,7 +289,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         return
 
     try:
-        settings = _load_settings(validate=True)
+        settings = _load_settings()
     except (CheckError, RuntimeError) as exc:
         _exit_with_config_error(parser, exc)
     uvicorn.run(

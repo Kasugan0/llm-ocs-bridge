@@ -101,7 +101,7 @@ async def test_configuration_failure_closes_connection(settings, tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_capacity_reclaims_wal_before_evicting(settings, tmp_path, monkeypatch):
+async def test_capacity_reclaims_wal_before_evicting(settings, tmp_path):
     from llm_ocs_bridge.cache import SearchCacheStore
     from llm_ocs_bridge.models import OCSQuery
     from llm_ocs_bridge.storage import Database
@@ -184,9 +184,7 @@ async def test_post_commit_failure_does_not_claim_rollback(
 
 
 @pytest.mark.asyncio
-async def test_capacity_vacuums_once_for_multiple_prune_batches(
-    settings, tmp_path, monkeypatch
-):
+async def test_capacity_vacuums_once_for_multiple_prune_batches(settings, tmp_path):
     from llm_ocs_bridge.cache import SearchCacheStore
     from llm_ocs_bridge.models import OCSQuery
     from llm_ocs_bridge.storage import Database

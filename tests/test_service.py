@@ -1,4 +1,3 @@
-import importlib
 from dataclasses import replace
 from unittest.mock import AsyncMock, call
 
@@ -32,7 +31,7 @@ async def test_llm_calls_count_actual_http_attempts(settings):
     "error_name", ["ResponseTooLargeError", "ProviderProtocolError"]
 )
 async def test_llm_protocol_failures_are_logged(error_name, settings):
-    llm_module = importlib.import_module("llm_ocs_bridge.llm")
+    from llm_ocs_bridge import llm as llm_module
     error = getattr(llm_module, error_name)("provider failure")
     runtime = service_module.build_runtime(settings)
     runtime.answerer = AsyncMock()

@@ -8,7 +8,7 @@ from time import time
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .config import Settings, load_settings, validate_runtime_settings
+from .config import Settings, load_settings
 from .questions import QuestionError, parse_query
 from .service import Runtime, answer, build_runtime
 
@@ -33,7 +33,6 @@ router = APIRouter()
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings if settings is not None else load_settings()
-    validate_runtime_settings(settings)
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.state.settings = settings
     app.include_router(router)

@@ -643,7 +643,7 @@ def test_stats_reports_fallback_call(monkeypatch):
     assert counters["llm_fallbacks"] == 1
 
 
-def test_search_answer_cache_hit_has_no_provider_header(monkeypatch):
+def test_search_answer_cache_hit_has_no_provider_header():
     from llm_ocs_bridge.app import create_app
 
     app = create_app(load_settings(environ=os.environ))

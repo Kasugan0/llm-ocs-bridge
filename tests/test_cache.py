@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import os
 from dataclasses import replace
 
@@ -11,7 +10,7 @@ from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.storage import Database
 
 
-def test_answer_cache_key_isolates_prompt_version(settings):
+def test_answer_cache_key_isolates_prompt_version():
     query = OCSQuery(title="题目", options=("选项",), question_type="single")
     v1 = cache_key(
         "answer",
@@ -36,7 +35,7 @@ def test_answer_cache_key_isolates_prompt_version(settings):
     assert v1 != v2
 
 
-def test_answer_cache_key_isolates_search_version_and_answer_mode(settings):
+def test_answer_cache_key_isolates_search_version_and_answer_mode():
     query = OCSQuery(title="题目", options=("选项",), question_type="single")
     search_v1 = cache_key(
         "answer",
@@ -72,7 +71,7 @@ def test_answer_cache_key_isolates_search_version_and_answer_mode(settings):
     assert search_v2 != fallback_answer
 
 
-def test_search_cache_key_isolates_full_question_semantics(settings):
+def test_search_cache_key_isolates_full_question_semantics():
     base = cache_key("search", "Python是什么", ["A.语言", "B.动物"], "single", 5, "v2")
     different_options = cache_key(
         "search", "Python是什么", ["A.蛇", "B.语言"], "single", 5, "v2"
@@ -188,9 +187,7 @@ def test_sqlite_capacity_counts_main_wal_and_shm(settings, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sqlite_capacity_prunes_oldest_cache_entry(
-    settings, tmp_path, monkeypatch
-):
+async def test_sqlite_capacity_prunes_oldest_cache_entry(settings, tmp_path):
     from llm_ocs_bridge.cache import SearchCacheStore
 
     path = str(tmp_path / "capacity.sqlite3")
@@ -236,7 +233,7 @@ async def test_sqlite_files_are_private_after_connect(settings, tmp_path):
     await store.db.close()
 
 
-def test_decode_search_results_discards_malformed_fields(settings):
+def test_decode_search_results_discards_malformed_fields():
     from llm_ocs_bridge.cache import decode_search_results
 
     payload = (
@@ -253,8 +250,8 @@ def test_decode_search_results_discards_malformed_fields(settings):
 
 
 @pytest.mark.asyncio
-async def test_metrics_sanitize_error_messages(settings, monkeypatch, tmp_path):
-    metrics_module = importlib.import_module("llm_ocs_bridge.metrics")
+async def test_metrics_sanitize_error_messages(settings, tmp_path):
+    from llm_ocs_bridge import metrics as metrics_module
     MetricsStore = metrics_module.MetricsStore
     settings = replace(settings, max_error_message_length=32)
     store = MetricsStore(

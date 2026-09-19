@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import time
 
-import aiosqlite
-
 from .config import Settings
 from .storage import Database
 from .utils import sanitize_error
@@ -29,30 +27,16 @@ class MetricsStore:
 
     async def incr(self, metric: str, delta: int = 1) -> None:
         async with self.db.write() as db:
-            await self._incr(db, metric, delta)
-
-    async def incr_many(self, metrics: dict[str, int]) -> None:
-        async with self.db.write() as db:
-            for metric, delta in metrics.items():
-                await self._incr(db, metric, delta)
-
-    @staticmethod
-    async def _incr(
-        db: aiosqlite.Connection,
-        metric: str,
-        delta: int,
-    ) -> None:
-        now = int(time.time())
-        await db.execute(
-            """
-            INSERT INTO metric_counters (metric, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(metric) DO UPDATE SET
-                value = metric_counters.value + excluded.value,
-                updated_at = excluded.updated_at
-            """,
-            (metric, delta, now),
-        )
+            await db.execute(
+                """
+                INSERT INTO metric_counters (metric, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(metric) DO UPDATE SET
+                    value = metric_counters.value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (metric, delta, int(time.time())),
+            )
 
     async def log_error(
         self,

@@ -38,15 +38,10 @@ def _int(
     values: Mapping[str, str | None],
     name: str,
     *,
-    default: int | None = None,
     minimum: int = 1,
     maximum: int | None = None,
 ) -> int:
-    value = _text(values, name)
-    if value is None:
-        if default is None:
-            raise RuntimeError(f"{name} is required")
-        return default
+    value = _text(values, name, required=True)
     assert value is not None
     try:
         parsed = int(value)
@@ -66,13 +61,7 @@ def _optional_int(
     value = _text(values, name)
     if value is None:
         return None
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    if parsed < minimum:
-        raise RuntimeError(f"{name} must be at least {minimum}")
-    return parsed
+    return _int(values, name, minimum=minimum)
 
 
 def _float(

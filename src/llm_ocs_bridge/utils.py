@@ -36,13 +36,4 @@ def sanitize_error(value: str | None, max_bytes: int) -> str:
 
 
 def truncate_utf8(value: str, max_bytes: int) -> str:
-    if len(value.encode("utf-8")) <= max_bytes:
-        return value
-    left, right = 0, len(value)
-    while left < right:
-        middle = (left + right + 1) // 2
-        if len(value[:middle].encode("utf-8")) <= max_bytes:
-            left = middle
-        else:
-            right = middle - 1
-    return value[:left]
+    return value.encode("utf-8")[: max(0, max_bytes)].decode("utf-8", errors="ignore")

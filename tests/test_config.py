@@ -6,21 +6,21 @@ import pytest
 
 def test_default_host_is_localhost(monkeypatch):
     monkeypatch.delenv("HOST", raising=False)
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     assert config.load_settings(environ=os.environ).host == "127.0.0.1"
 
 
 def test_llm_fallback_is_enabled_by_default(monkeypatch):
     monkeypatch.delenv("LLM_FALLBACK_ENABLED", raising=False)
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     assert config.load_settings(environ=os.environ).llm_fallback_enabled is True
 
 
 def test_empty_access_token_fails_runtime_validation(monkeypatch):
     monkeypatch.setenv("ACCESS_TOKEN", "   ")
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     with pytest.raises(RuntimeError, match="ACCESS_TOKEN is required"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))
@@ -29,7 +29,7 @@ def test_empty_access_token_fails_runtime_validation(monkeypatch):
 def test_missing_openai_key_fails_runtime_validation(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", " ")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))
@@ -38,7 +38,7 @@ def test_missing_openai_key_fails_runtime_validation(monkeypatch):
 def test_missing_exa_key_requires_fallback(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", " ")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "false")
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     with pytest.raises(RuntimeError, match="EXA_API_KEY is required"):
         config.validate_check_settings(config.load_settings(environ=os.environ))
@@ -47,7 +47,7 @@ def test_missing_exa_key_requires_fallback(monkeypatch):
 def test_missing_exa_key_is_allowed_with_fallback(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", " ")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     config.validate_check_settings(config.load_settings(environ=os.environ))
 
@@ -63,7 +63,7 @@ def test_missing_exa_key_is_allowed_with_fallback(monkeypatch):
 def test_example_placeholders_fail_runtime_validation(monkeypatch, name, value):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
     monkeypatch.setenv(name, value)
-    config = importlib.import_module("llm_ocs_bridge.config")
+    from llm_ocs_bridge import config as config
 
     with pytest.raises(RuntimeError, match=f"{name} still uses"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))

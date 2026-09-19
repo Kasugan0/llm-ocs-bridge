@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -103,9 +102,7 @@ def test_exa_search_uses_async_client(
     constructor.assert_called_once_with("test-key")
 
 
-def test_exa_search_score_results(
-    settings,
-):
+def test_exa_search_score_results():
     query = OCSQuery(
         title="Python之父",
         options=("Guido van Rossum",),
@@ -137,9 +134,7 @@ def test_exa_search_score_results(
     assert ExaSearch.score_results([], 5) == 0.0
 
 
-def test_exa_search_score_results_with_zero_limit(
-    settings,
-):
+def test_exa_search_score_results_with_zero_limit():
     results = [
         SearchResult(
             title="Result 1",
@@ -152,7 +147,7 @@ def test_exa_search_score_results_with_zero_limit(
     assert ExaSearch.score_results([(results[0], 1.0)], 0) == 0.0
 
 
-def test_exa_search_without_limit_does_not_send_num_results(settings, monkeypatch):
+def test_exa_search_without_limit_does_not_send_num_results(settings):
     client = Mock()
     client.search = AsyncMock(return_value=SimpleNamespace(results=[]))
     search = ExaSearch(replace(settings, exa_api_key="test-key"))
@@ -167,16 +162,12 @@ def test_exa_search_without_limit_does_not_send_num_results(settings, monkeypatc
     assert "num_results" not in client.search.call_args.kwargs
 
 
-def test_exa_source_score_uses_hostname_boundaries(
-    settings,
-):
+def test_exa_source_score_uses_hostname_boundaries():
     assert ExaSearch._source_score("https://wikipedia.org.example/article") == 0.3
     assert ExaSearch._source_score("https://en.wikipedia.org/article") == 1.0
 
 
-def test_exa_rejects_results_without_semantic_overlap(
-    settings,
-):
+def test_exa_rejects_results_without_semantic_overlap():
     query = OCSQuery(title="Python之父是谁")
     results = [
         SearchResult(
@@ -192,8 +183,8 @@ def test_exa_rejects_results_without_semantic_overlap(
 
 
 @pytest.mark.asyncio
-async def test_exa_search_timeout_cancels_request(settings, monkeypatch):
-    search_module = importlib.import_module("llm_ocs_bridge.search")
+async def test_exa_search_timeout_cancels_request(settings):
+    from llm_ocs_bridge import search as search_module
     settings = replace(settings, exa_timeout_seconds=0.001)
     cancelled = asyncio.Event()
 

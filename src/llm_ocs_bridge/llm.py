@@ -10,7 +10,7 @@ import httpx
 from .config import Settings
 from .models import OCSQuery, SearchResult
 from .questions import allowed_option_labels, format_options_for_prompt
-from .utils import normalize_text, truncate_utf8
+from .utils import normalize_text
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -233,34 +233,22 @@ def format_search_context(
     if max_bytes is not None and max_bytes <= 0:
         return ""
 
-    if max_bytes is None:
-        lines: list[str] = []
-        for index, item in enumerate(results, start=1):
-            piece = [f"[{index}] {item.title}"]
-            if item.url:
-                piece.append(item.url)
-            if item.snippet:
-                piece.append(item.snippet)
-            lines.append("\n".join(piece))
-        return "\n\n".join(lines)
-
-    context = ""
+    chunks: list[bytes] = []
+    used_bytes = 0
     for index, item in enumerate(results, start=1):
-        piece = [f"[{index}] {item.title}"]
-        if item.url:
-            piece.append(item.url)
-        if item.snippet:
-            piece.append(item.snippet)
-        candidate = "\n".join(piece)
-        prefix = "\n\n" if context else ""
-        remaining = max_bytes - len(context.encode("utf-8"))
-        if remaining <= len(prefix.encode("utf-8")):
+        prefix = "\n\n" if chunks else ""
+        piece = "\n".join(
+            filter(None, (f"[{index}] {item.title}", item.url, item.snippet))
+        )
+        candidate = (prefix + piece).encode("utf-8")
+        remaining = len(candidate) if max_bytes is None else max_bytes - used_bytes
+        if remaining <= len(prefix):
             break
-        chunk = truncate_utf8(prefix + candidate, remaining)
-        context += chunk
-        if chunk != prefix + candidate:
+        chunks.append(candidate[:remaining])
+        used_bytes += len(chunks[-1])
+        if remaining < len(candidate):
             break
-    return context
+    return b"".join(chunks).decode("utf-8", errors="ignore")
 
 
 def normalize_answer_payload(payload: object, question_type: str) -> str:
@@ -300,7 +288,7 @@ def normalize_answer_payload(payload: object, question_type: str) -> str:
         answers = [normalize_text(item) for item in value]
         if not answers or any(not item or "#" in item for item in answers):
             return ""
-        return answers[0] if len(answers) == 1 else "#".join(answers)
+        return "#".join(answers)
 
     value = _pick_field(payload, "answer")
     return normalize_text(value) if isinstance(value, str) else ""
@@ -347,17 +335,14 @@ def _pick_field(payload: object, *keys: str) -> object | None:
 
 def _normalize_option_list(value: object) -> list[str]:
     if isinstance(value, str):
-        normalized = normalize_text(value).upper()
-        tokens = normalized.split("#")
-        if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
-            return []
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        tokens = normalize_text(value).upper().split("#")
+    elif isinstance(value, Sequence) and not isinstance(value, bytes):
         if any(not isinstance(item, str) for item in value):
             return []
         tokens = [normalize_text(item).upper() for item in value]
-        if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
-            return []
     else:
+        return []
+    if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
         return []
     if len(tokens) != len(set(tokens)):
         return []

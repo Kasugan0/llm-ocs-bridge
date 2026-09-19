@@ -1,3 +1,5 @@
+import pytest
+
 from llm_ocs_bridge.cache import cache_key, question_cache_parts, serialize_options
 from llm_ocs_bridge.llm import (
     format_search_context,
@@ -6,7 +8,7 @@ from llm_ocs_bridge.llm import (
 )
 from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.search import render_search_query
-from llm_ocs_bridge.utils import sanitize_error
+from llm_ocs_bridge.utils import sanitize_error, truncate_utf8
 
 
 def test_sanitize_error_redacts_complete_bearer_credential():
@@ -51,6 +53,24 @@ def test_normalize_answer_payload_multiple_strict():
     assert normalize_answer_payload({"answers": ["A", "C"]}, "multiple") == "A#C"
     assert normalize_answer_payload({"answer": "A#C"}, "multiple") == "A#C"
     assert normalize_answer_payload({"answers": "A and not C"}, "multiple") == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" b#a ", "A#B"),
+        ("A # B", ""),
+        ("A# B", ""),
+        ([" b ", " a "], "A#B"),
+        (["A", "a"], ""),
+        (["A", 2], ""),
+        (b"A#B", ""),
+        ([], ""),
+        ("", ""),
+    ],
+)
+def test_multiple_answer_codec_preserves_string_and_array_contract(value, expected):
+    assert normalize_answer_payload({"answers": value}, "multiple") == expected
 
 
 def test_normalize_answer_payload_judgement_strict():
@@ -113,3 +133,26 @@ def test_search_context_respects_utf8_byte_limit():
 
     assert len(context.encode("utf-8")) <= 17
     assert format_search_context([], max_bytes=0) == ""
+
+
+def test_truncate_utf8_at_every_character_boundary():
+    value = "A中🙂文B"
+    encoded = value.encode("utf-8")
+    for limit in range(-1, len(encoded) + 2):
+        assert truncate_utf8(value, limit) == encoded[: max(0, limit)].decode(
+            "utf-8", errors="ignore"
+        )
+
+
+def test_search_context_preserves_separators_and_byte_boundaries():
+    results = [SearchResult(title="中文"), SearchResult(title="🙂", snippet="证据")]
+    first = "[1] 中文"
+    expected = first + "\n\n[2] 🙂\n证据"
+    encoded = expected.encode("utf-8")
+    first_bytes = len(first.encode("utf-8"))
+    assert format_search_context(results) == expected
+    for limit in range(len(encoded) + 2):
+        bounded = first if first_bytes < limit <= first_bytes + 2 else encoded[
+            :limit
+        ].decode("utf-8", errors="ignore")
+        assert format_search_context(results, max_bytes=limit) == bounded

@@ -4,7 +4,6 @@ import hashlib
 import json
 import time
 from collections.abc import Sequence
-from typing import Any
 
 from .config import SEARCH_REVISION, Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
@@ -239,7 +238,7 @@ def cache_key(*parts: object) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _canonicalize(value: object) -> Any:
+def _canonicalize(value: object) -> object:
     if isinstance(value, str):
         return normalize_text(value)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
