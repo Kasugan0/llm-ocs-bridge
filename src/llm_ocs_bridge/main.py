@@ -229,12 +229,9 @@ def _ocs_config(settings: Settings) -> list[dict[str, object]]:
 
 
 def _safe_error(exc: Exception, max_bytes: int) -> str:
-    try:
-        from .utils import sanitize_error
+    from .utils import sanitize_error
 
-        return sanitize_error(str(exc), max_bytes) or type(exc).__name__
-    except RuntimeError:
-        return str(exc)[:max_bytes] or type(exc).__name__
+    return sanitize_error(str(exc), max_bytes) or type(exc).__name__
 
 
 async def _check() -> int:

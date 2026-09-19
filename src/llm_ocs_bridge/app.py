@@ -16,7 +16,7 @@ from .cache import (
     encode_search_results,
 )
 from .config import Settings, load_settings, validate_runtime_settings
-from .llm import InvalidAnswerError, LLMAnswerer, LLMError
+from .llm import InvalidAnswerError, LLMAnswerer, MissingKeyError
 from .metrics import MetricsStore
 from .models import OCSQuery, SearchResult
 from .search import ExaSearch
@@ -85,7 +85,7 @@ def _auth_ok(request: Request) -> bool:
     token = request.headers.get("X-Access-Token", "")
     if not settings.access_token:
         return False
-    return secrets.compare_digest(token, settings.access_token)
+    return secrets.compare_digest(token.encode(), settings.access_token.encode())
 
 
 def _ocs_response(
@@ -363,7 +363,7 @@ async def _respond_with_answer(
     settings = runtime.settings
     try:
         answer = await _answer_with_llm(runtime, query, evidence, fallback)
-    except RuntimeError as exc:
+    except MissingKeyError as exc:
         await runtime.metrics_store.log_error("llm", "MissingKey", str(exc))
         return _ocs_response(
             query.title,
@@ -372,9 +372,6 @@ async def _respond_with_answer(
         )
     except InvalidAnswerError:
         return _ocs_response(query.title, None, "答案格式不合法")
-    except LLMError as exc:
-        await runtime.metrics_store.log_error("llm", type(exc).__name__, str(exc))
-        return _ocs_response(query.title, None, "LLM调用失败")
     except Exception as exc:  # noqa: BLE001
         await runtime.metrics_store.log_error("llm", type(exc).__name__, str(exc))
         return _ocs_response(query.title, None, "LLM调用失败")

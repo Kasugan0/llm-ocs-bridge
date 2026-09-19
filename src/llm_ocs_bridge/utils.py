@@ -19,11 +19,16 @@ _OPTION_LABEL_CAPTURE_RE = re.compile(
     r"^\s*([A-H])(?=[\.\:、\)]|\s|$)[\.\:、\)]?\s*",
     re.IGNORECASE,
 )
-_BEARER_RE = re.compile(r"(?i)(\bauthorization\b\s*[:=]\s*bearer\s+)[^\s,;]+")
+_BEARER_RE = re.compile(r'''(?i)(\bbearer\s+)[^\s,;"'\]}]+''')
 _SECRET_RE = re.compile(
-    r"(?i)(\b(?:api[_-]?key|token|password|secret)\b\s*[:=]\s*)[^\s,;]+"
+    r'''(?ix)(["']?\b(?:authorization|(?:[\w-]+[_-])?'''
+    r'''(?:api[_-]?key|token|password|secret))\b["']?\s*[:=]\s*)'''
+    r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:bearer\s+)?[^\s,;}\]]+)'''
 )
-_TOKEN_RE = re.compile(r"\b(?:sk|exa)[-_][A-Za-z0-9_-]{8,}\b")
+_TOKEN_RE = re.compile(
+    r"\b(?:sk|exa)[-_][A-Za-z0-9_-]{8,}\b"
+    r"|\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b"
+)
 QUESTION_TYPES = frozenset({"single", "multiple", "judgement", "completion"})
 
 
@@ -35,8 +40,8 @@ def normalize_text(value: str | None) -> str:
 
 def sanitize_error(value: str | None, max_bytes: int) -> str:
     message = "" if value is None else str(value)
-    message = _BEARER_RE.sub(r"\1[REDACTED]", message)
     message = _SECRET_RE.sub(r"\1[REDACTED]", message)
+    message = _BEARER_RE.sub(r"\1[REDACTED]", message)
     message = _TOKEN_RE.sub("[REDACTED]", message)
     return _truncate_utf8(normalize_text(message), max_bytes)
 
@@ -202,8 +207,7 @@ def validate_answer(
     if question_type == "judgement":
         return value in {"正确", "错误"}
     if question_type == "completion":
-        parts = value.split("#")
-        return all(parts) and all("#" not in part for part in parts)
+        return all(part.strip() for part in value.split("#"))
     return True
 
 

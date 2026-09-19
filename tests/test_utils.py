@@ -21,7 +21,7 @@ def test_sanitize_error_redacts_complete_bearer_credential():
     )
 
     assert "vendor-secret-123" not in message
-    assert "Authorization: Bearer [REDACTED]" in message
+    assert "Authorization: [REDACTED]" in message
 
 
 def test_normalize_query_parses_options():

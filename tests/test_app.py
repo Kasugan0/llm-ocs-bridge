@@ -1062,6 +1062,8 @@ def test_search_rejects_invalid_llm_answer(monkeypatch):
 
 
 def test_search_logs_error_on_llm_missing_key(monkeypatch):
+    from llm_ocs_bridge.llm import MissingKeyError
+
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
     from llm_ocs_bridge.app import create_app
@@ -1082,7 +1084,7 @@ def test_search_logs_error_on_llm_missing_key(monkeypatch):
         ),
         patch(
             "llm_ocs_bridge.app._get_answerer",
-            side_effect=RuntimeError("OPENAI_API_KEY is required"),
+            side_effect=MissingKeyError("OPENAI_API_KEY is required"),
         ),
     ):
         response = client.post(

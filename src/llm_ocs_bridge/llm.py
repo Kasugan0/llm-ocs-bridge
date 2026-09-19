@@ -26,6 +26,10 @@ class LLMError(Exception):
     pass
 
 
+class MissingKeyError(LLMError):
+    pass
+
+
 class InvalidAnswerError(LLMError):
     pass
 
@@ -47,7 +51,7 @@ class LLMAnswerer:
         self.settings = settings
         self.api_key = settings.openai_api_key
         if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is required")
+            raise MissingKeyError("OPENAI_API_KEY is required")
         self.base_url = settings.openai_base_url
         self.model = settings.openai_model
         self._client: httpx.AsyncClient | None = None
