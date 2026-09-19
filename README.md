@@ -30,6 +30,29 @@ llm-ocs-bridge
 
 Exa 是可选项。未设置 `EXA_API_KEY` 时，项目不会匿名调用 Exa，而是直接进入 LLM fallback。本项目目前不支持 Exa x402 付费请求。
 
+搜索模式答案缓存最先查询；fallback 答案缓存只在搜索不可用后查询，因此不会阻止搜索恢复。两种答案缓存命中均不返回 `X-Search-Provider`；实时作答使用 `exa`、`cache` 或 `llm-fallback` 标明证据来源。
+
+## 代码结构
+
+继续使用 `src/llm_ocs_bridge/` 扁平包，不引入框架式分层：
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.py` | HTTP、鉴权、响应映射和生命周期 |
+| `service.py` | 有类型的 Runtime、缓存与答题流程 |
+| `questions.py` | 题目/选项归一化、标签解析和输入校验 |
+| `llm.py` | 上游请求、重试、prompt 和答案解析校验 |
+| `search.py` | Exa 适配、英文词/中文二元组匹配和证据评分 |
+| `cache.py` | 缓存键、序列化、读写及最近搜索查询 |
+| `storage.py` | 唯一数据库 owner、schema、事务、容量和权限 |
+| `metrics.py` | 累计指标及脱敏错误日志 |
+| `config.py` / `main.py` | 显式配置加载 / CLI 启动与检查 |
+| `models.py` / `utils.py` | 共享数据结构 / 通用文本处理 |
+
+每个 Runtime 只有一个 Database，三个 store 组合共享它。启动时完成 schema 初始化，读操作与完整写事务共用互斥锁，退出时统一关闭；事务体因取消或异常退出时执行回滚，已提交的数据不因后续取消而撤销。容量统计包括主库、WAL 和 SHM，先 checkpoint，再按写入时间淘汰，最后集中 VACUUM；不使用 TTL 或 LRU。若写入已提交但后续维护失败，抛出 `PostCommitError`，调用者不应当把它当成未写入而盲目重试。
+
+检索会拼接全部有效 highlights，再逐条剔除零相关证据；质量阈值设为零也不能绕过这一门槛。相关性是轻量词面启发式，不是 embedding 或答案正确性证明。内置证据算法修订号 `v4` 参与搜索和答案缓存键，已有 `.env` 使用旧 `SEARCH_CACHE_VERSION` 也不会复用旧算法的缓存；该环境变量仍可额外手动失效缓存。`PROMPT_VERSION` 只用于生成规则变化。
+
 ## 快速开始
 
 要求 Python 3.12 或更高版本，并使用 [uv](https://docs.astral.sh/uv/) 管理环境。
@@ -81,9 +104,22 @@ uv run llm-ocs-bridge
 | `uv run llm-ocs-bridge clear-cache --scope all` | 清理全部缓存 |
 | `uv run llm-ocs-bridge --help` | 查看完整命令帮助 |
 
+启动、`check` 和 `clear-cache` 均从当前工作目录读取 `.env`，系统环境变量优先，不在导入时读取配置。`clear-cache` 只解析存储配置，且保留累计指标和错误日志。`DEBUG=true` 使用 Uvicorn 应用工厂支持 reload。
+
+## 开发验证
+
+```bash
+uv run --frozen pytest
+uv run --frozen ruff check src tests pyproject.toml
+uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
+```
+
+测试使用合成凭据与临时数据库，不调用付费上游。架构审阅基线、逐函数记录及重构验收见 `SRC_ARCHITECTURE_REVIEW.md`。
+
 ## 文档
 
 - [安装、配置、OCS 接入与故障排查](DEPLOY.md)
+- [HTTP 合同与隔离验收](TESTING.md)
 - [完整环境变量及默认值](.env.example)
 - [OCS 题库 API 文档](https://docs.ocsjs.com/docs/other/api)
 - [Exa x402 文档](https://exa.ai/docs/integrations/payments/x402/quickstart)
