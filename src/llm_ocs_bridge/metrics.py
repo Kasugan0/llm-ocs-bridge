@@ -4,7 +4,7 @@ import time
 
 import aiosqlite
 
-from .config import settings
+from .config import Settings
 from .storage import AsyncSQLiteStore
 from .utils import sanitize_error
 
@@ -23,6 +23,10 @@ _COUNTERS = (
 
 
 class MetricsStore(AsyncSQLiteStore):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.settings = settings
+
     async def _init_db(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
@@ -79,9 +83,9 @@ class MetricsStore(AsyncSQLiteStore):
         error_type: str,
         error_msg: str | None = None,
     ) -> None:
-        provider = sanitize_error(provider, settings.max_error_message_length)
-        error_type = sanitize_error(error_type, settings.max_error_message_length)
-        message = sanitize_error(error_msg, settings.max_error_message_length)
+        provider = sanitize_error(provider, self.settings.max_error_message_length)
+        error_type = sanitize_error(error_type, self.settings.max_error_message_length)
+        message = sanitize_error(error_msg, self.settings.max_error_message_length)
         async with self._write() as db:
             await db.execute(
                 """
@@ -97,7 +101,7 @@ class MetricsStore(AsyncSQLiteStore):
                     SELECT id FROM error_log ORDER BY id DESC LIMIT ?
                 )
                 """,
-                (settings.max_error_logs,),
+                (self.settings.max_error_logs,),
             )
 
     async def get_counters(self) -> dict[str, int]:
@@ -111,7 +115,7 @@ class MetricsStore(AsyncSQLiteStore):
         return values
 
     async def get_recent_errors(self, limit: int = 10) -> list[dict[str, str | int]]:
-        limit = min(max(limit, 0), settings.max_error_logs)
+        limit = min(max(limit, 0), self.settings.max_error_logs)
         db = await self._db()
         cursor = await db.execute(
             """
@@ -128,16 +132,16 @@ class MetricsStore(AsyncSQLiteStore):
             {
                 "timestamp": int(row["timestamp"]),
                 "provider": sanitize_error(
-                    str(row["provider"]), settings.max_error_message_length
+                    str(row["provider"]), self.settings.max_error_message_length
                 ),
                 "error": (
                     sanitize_error(
                         f"{row['error_type']}: {row['error_msg']}",
-                        settings.max_error_message_length,
+                        self.settings.max_error_message_length,
                     )
                     if row["error_msg"]
                     else sanitize_error(
-                        str(row["error_type"]), settings.max_error_message_length
+                        str(row["error_type"]), self.settings.max_error_message_length
                     )
                 ),
             }

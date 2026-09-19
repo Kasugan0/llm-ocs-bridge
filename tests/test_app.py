@@ -1,4 +1,5 @@
 import importlib
+import os
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
@@ -7,13 +8,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_ocs_bridge.cache import encode_search_results
+from llm_ocs_bridge.config import load_settings
 from llm_ocs_bridge.models import OCSQuery, SearchResult
 
 AUTH_HEADERS = {"X-Access-Token": "test-access-token"}
 
 
 def test_health_endpoint():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         response = client.get("/health")
@@ -25,7 +29,9 @@ def test_health_endpoint():
 def test_health_endpoint_with_exa_provider(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         client.app.state.runtime.search_client.api_key = "exa-test-key"
@@ -35,7 +41,9 @@ def test_health_endpoint_with_exa_provider(monkeypatch):
 
 
 def test_root_endpoint():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         response = client.get("/")
@@ -44,7 +52,9 @@ def test_root_endpoint():
 
 
 def test_search_requires_exa_key_without_fallback():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         response = client.post(
@@ -67,7 +77,9 @@ def test_search_requires_exa_key_without_fallback():
 def test_search_allows_llm_fallback_without_exa_key_when_enabled(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -107,7 +119,9 @@ def test_search_allows_llm_fallback_without_exa_key_when_enabled(monkeypatch):
 def test_search_logs_error_on_search_failure(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -149,7 +163,9 @@ def test_search_logs_error_on_search_failure(monkeypatch):
 def test_search_blocks_empty_evidence_without_fallback(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -186,7 +202,9 @@ def test_search_blocks_empty_evidence_without_fallback(monkeypatch):
 def test_search_returns_exa_header_on_live_hit(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -253,7 +271,9 @@ def test_search_returns_exa_header_on_live_hit(monkeypatch):
 def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -328,7 +348,9 @@ def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
 def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -403,7 +425,9 @@ def test_search_sets_llm_fallback_header_without_evidence(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -448,7 +472,9 @@ def test_search_sets_llm_fallback_header_on_search_failure(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -488,7 +514,9 @@ def test_search_sets_llm_fallback_header_on_search_failure(monkeypatch):
 def test_stats_reports_search_success_and_llm_call(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -566,7 +594,9 @@ def test_stats_reports_search_success_and_llm_call(monkeypatch):
 def test_stats_reports_fallback_call(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -615,7 +645,9 @@ def test_stats_reports_fallback_call(monkeypatch):
 
 
 def test_search_answer_cache_hit_has_no_provider_header(monkeypatch):
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -658,7 +690,9 @@ def test_search_answer_cache_hit_has_no_provider_header(monkeypatch):
 def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -734,7 +768,9 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
 def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     evidence = [
         SearchResult(
@@ -798,12 +834,12 @@ def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
     assert all("answer=H" not in item["error"] for item in errors)
 
 
-def test_cache_keys_include_evidence_configuration(monkeypatch):
+def test_cache_keys_include_evidence_configuration(settings):
     app_module = importlib.import_module("llm_ocs_bridge.app")
     query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
-    base_settings = app_module.settings
-    base_answer_key = app_module._answer_key(query, "search")
-    base_search_key = app_module._search_key(query)
+    base_settings = settings
+    base_answer_key = app_module._answer_key(query, "search", settings)
+    base_search_key = app_module._search_key(query, settings)
 
     answer_fields = {
         "openai_base_url": "https://provider.example/v1",
@@ -812,19 +848,11 @@ def test_cache_keys_include_evidence_configuration(monkeypatch):
         "max_evidence_bytes": 2048,
     }
     for field, value in answer_fields.items():
-        monkeypatch.setattr(
-            app_module,
-            "settings",
-            replace(base_settings, **{field: value}),
-        )
-        assert app_module._answer_key(query, "search") != base_answer_key
+        settings = replace(base_settings, **{field: value})
+        assert app_module._answer_key(query, "search", settings) != base_answer_key
 
-    monkeypatch.setattr(
-        app_module,
-        "settings",
-        replace(base_settings, min_search_quality_score=0.6),
-    )
-    assert app_module._search_key(query) != base_search_key
+    settings = replace(base_settings, min_search_quality_score=0.6)
+    assert app_module._search_key(query, settings) != base_search_key
 
 
 @pytest.mark.asyncio
@@ -851,11 +879,12 @@ async def test_llm_calls_count_actual_http_attempts():
 @pytest.mark.parametrize(
     "error_name", ["ResponseTooLargeError", "ProviderProtocolError"]
 )
-async def test_llm_protocol_failures_are_logged(error_name):
+async def test_llm_protocol_failures_are_logged(error_name, settings):
     app_module = importlib.import_module("llm_ocs_bridge.app")
     llm_module = importlib.import_module("llm_ocs_bridge.llm")
     error = getattr(llm_module, error_name)("provider failure")
     runtime = SimpleNamespace(
+        settings=settings,
         answerer=SimpleNamespace(answer=AsyncMock(side_effect=error)),
         metrics_store=SimpleNamespace(incr=AsyncMock(), log_error=AsyncMock()),
         answer_cache=SimpleNamespace(set=AsyncMock()),
@@ -884,7 +913,9 @@ async def test_llm_protocol_failures_are_logged(error_name):
 def test_invalid_cached_search_payload_falls_through(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -951,7 +982,9 @@ def test_invalid_cached_search_payload_falls_through(monkeypatch):
 
 
 def test_search_invalid_json():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         response = client.post(
@@ -967,7 +1000,9 @@ def test_search_invalid_json():
 def test_search_rejects_invalid_llm_answer(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     snippet = (
         "This is a long enough snippet to pass the quality threshold "
@@ -1029,7 +1064,9 @@ def test_search_rejects_invalid_llm_answer(monkeypatch):
 def test_search_logs_error_on_llm_missing_key(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with (
         TestClient(app) as client,
@@ -1066,7 +1103,9 @@ def test_search_logs_error_on_llm_missing_key(monkeypatch):
 
 
 def test_search_auth_requires_header_and_rejects_url_token():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         missing = client.post("/search", json={"title": "题目"})
@@ -1088,7 +1127,9 @@ def test_search_auth_requires_header_and_rejects_url_token():
 
 
 def test_search_rejects_invalid_utf8():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         response = client.post(
@@ -1100,65 +1141,35 @@ def test_search_rejects_invalid_utf8():
     assert response.json() == {"code": 0, "msg": "请求体必须是 UTF-8 编码"}
 
 
-def test_search_enforces_configured_input_limits(monkeypatch):
-    app_module = importlib.import_module("llm_ocs_bridge.app")
-    monkeypatch.setattr(
-        app_module,
-        "settings",
-        replace(
-            app_module.settings,
-            max_request_bytes=1,
-            max_title_length=2,
-            max_options_count=1,
-            max_option_length=2,
+@pytest.mark.parametrize(
+    ("overrides", "payload", "message"),
+    [
+        ({"max_request_bytes": 1}, {}, "请求体超过大小限制"),
+        ({"max_title_length": 2}, {"title": "题目太长"}, "题目超过长度限制"),
+        (
+            {"max_options_count": 1},
+            {"title": "题目", "options": ["A", "B"]},
+            "选项数量超过限制",
         ),
-    )
+        (
+            {"max_option_length": 2},
+            {"title": "题目", "options": ["ABC"]},
+            "选项超过长度限制",
+        ),
+    ],
+)
+def test_search_enforces_configured_input_limits(settings, overrides, payload, message):
+    from llm_ocs_bridge.app import create_app
 
-    with TestClient(app_module.app) as client:
-        oversized = client.post(
-            "/search",
-            content=b"{}",
-            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-        )
-        monkeypatch.setattr(
-            app_module,
-            "settings",
-            replace(app_module.settings, max_request_bytes=1024),
-        )
-        long_title = client.post(
-            "/search",
-            json={"title": "题目太长", "options": "A", "type": "single"},
-            headers=AUTH_HEADERS,
-        )
-        monkeypatch.setattr(
-            app_module,
-            "settings",
-            replace(app_module.settings, max_title_length=100),
-        )
-        too_many_options = client.post(
-            "/search",
-            json={"title": "题目", "options": ["A", "B"], "type": "single"},
-            headers=AUTH_HEADERS,
-        )
-        monkeypatch.setattr(
-            app_module,
-            "settings",
-            replace(app_module.settings, max_options_count=8),
-        )
-        long_option = client.post(
-            "/search",
-            json={"title": "题目", "options": ["ABC"], "type": "single"},
-            headers=AUTH_HEADERS,
-        )
-
-    assert oversized.json() == {"code": 0, "msg": "请求体超过大小限制"}
-    assert long_title.json() == {"code": 0, "msg": "题目超过长度限制"}
-    assert too_many_options.json() == {"code": 0, "msg": "选项数量超过限制"}
-    assert long_option.json() == {"code": 0, "msg": "选项超过长度限制"}
+    with TestClient(create_app(replace(settings, **overrides))) as client:
+        response = client.post("/search", json=payload, headers=AUTH_HEADERS)
+    assert response.json() == {"code": 0, "msg": message}
 
 
 def test_search_rejects_unknown_and_optionless_standard_types():
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     with TestClient(app) as client:
         unknown = client.post(
@@ -1191,7 +1202,9 @@ def test_search_rejects_unknown_and_optionless_standard_types():
 def test_search_allows_empty_question_type(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "exa-test-key")
 
-    from llm_ocs_bridge.app import app
+    from llm_ocs_bridge.app import create_app
+
+    app = create_app(load_settings(environ=os.environ))
 
     evidence = [
         SearchResult(

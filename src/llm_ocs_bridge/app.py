@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from time import time
 from types import SimpleNamespace
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .cache import (
@@ -15,7 +15,7 @@ from .cache import (
     decode_search_results,
     encode_search_results,
 )
-from .config import settings, validate_runtime_settings
+from .config import Settings, load_settings, validate_runtime_settings
 from .llm import InvalidAnswerError, LLMAnswerer, LLMError
 from .metrics import MetricsStore
 from .models import OCSQuery, SearchResult
@@ -35,13 +35,14 @@ class RequestError(ValueError):
     pass
 
 
-def build_runtime() -> SimpleNamespace:
-    validate_runtime_settings()
+def build_runtime(settings: Settings) -> SimpleNamespace:
+    validate_runtime_settings(settings)
     return SimpleNamespace(
-        search_client=ExaSearch(settings.exa_api_key),
-        search_cache=SearchCacheStore(settings.cache_path),
-        answer_cache=AnswerCacheStore(settings.cache_path),
-        metrics_store=MetricsStore(settings.cache_path),
+        settings=settings,
+        search_client=ExaSearch(settings),
+        search_cache=SearchCacheStore(settings),
+        answer_cache=AnswerCacheStore(settings),
+        metrics_store=MetricsStore(settings),
         answerer=None,
         start_time=time(),
     )
@@ -49,7 +50,7 @@ def build_runtime() -> SimpleNamespace:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.runtime = build_runtime()
+    app.state.runtime = build_runtime(app.state.settings)
     try:
         yield
     finally:
@@ -63,7 +64,16 @@ async def lifespan(app: FastAPI):
         await runtime.metrics_store.close()
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+router = APIRouter()
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings if settings is not None else load_settings()
+    validate_runtime_settings(settings)
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.state.settings = settings
+    app.include_router(router)
+    return app
 
 
 def _runtime(request: Request) -> SimpleNamespace:
@@ -71,6 +81,7 @@ def _runtime(request: Request) -> SimpleNamespace:
 
 
 def _auth_ok(request: Request) -> bool:
+    settings = request.app.state.settings
     token = request.headers.get("X-Access-Token", "")
     if not settings.access_token:
         return False
@@ -118,6 +129,7 @@ def _parse_request(
 
 
 async def _read_body(request: Request) -> dict[str, object]:
+    settings = request.app.state.settings
     if request.method == "GET":
         body = dict(request.query_params)
         body_size = len(json.dumps(body, ensure_ascii=False).encode("utf-8"))
@@ -157,7 +169,7 @@ async def _read_body(request: Request) -> dict[str, object]:
     return data
 
 
-def _validate_query(query: OCSQuery) -> None:
+def _validate_query(query: OCSQuery, settings: Settings) -> None:
     if len(query.title) > settings.max_title_length:
         raise RequestError("题目超过长度限制")
     if len(query.options) > settings.max_options_count:
@@ -172,7 +184,7 @@ def _validate_query(query: OCSQuery) -> None:
             raise RequestError("单选题和多选题必须提供有效选项")
 
 
-def _answer_key(query: OCSQuery, mode: str) -> str:
+def _answer_key(query: OCSQuery, mode: str, settings: Settings) -> str:
     return cache_key(
         "answer",
         *question_cache_parts(query),
@@ -187,7 +199,7 @@ def _answer_key(query: OCSQuery, mode: str) -> str:
     )
 
 
-def _search_key(query: OCSQuery) -> str:
+def _search_key(query: OCSQuery, settings: Settings) -> str:
     return cache_key(
         "search",
         *question_cache_parts(query),
@@ -199,7 +211,7 @@ def _search_key(query: OCSQuery) -> str:
 
 async def _get_answerer(runtime: SimpleNamespace) -> LLMAnswerer:
     if runtime.answerer is None:
-        runtime.answerer = LLMAnswerer()
+        runtime.answerer = LLMAnswerer(runtime.settings)
     return runtime.answerer
 
 
@@ -208,7 +220,7 @@ async def _cached_answer(
     query: OCSQuery,
     mode: str,
 ) -> str | None:
-    answer_key = _answer_key(query, mode)
+    answer_key = _answer_key(query, mode, runtime.settings)
     value = await runtime.answer_cache.get(answer_key)
     if value is None:
         await runtime.metrics_store.incr("answer_cache_misses")
@@ -259,7 +271,8 @@ async def _resolve_evidence(
     runtime: SimpleNamespace,
     query: OCSQuery,
 ) -> tuple[list[SearchResult], str, float, str | None]:
-    search_key = _search_key(query)
+    settings = runtime.settings
+    search_key = _search_key(query, settings)
     cached_payload = await runtime.search_cache.get(search_key)
     if cached_payload is not None:
         evidence = decode_search_results(cached_payload)
@@ -314,6 +327,7 @@ async def _resolve_evidence(
 async def _recent_search_observability(
     runtime: SimpleNamespace,
 ) -> list[dict[str, object]]:
+    settings = runtime.settings
     db = await runtime.search_cache._db()
     cursor = await db.execute(
         """
@@ -346,6 +360,7 @@ async def _respond_with_answer(
     cache_mode: str,
     fallback: bool,
 ) -> JSONResponse:
+    settings = runtime.settings
     try:
         answer = await _answer_with_llm(runtime, query, evidence, fallback)
     except RuntimeError as exc:
@@ -365,7 +380,7 @@ async def _respond_with_answer(
         return _ocs_response(query.title, None, "LLM调用失败")
 
     await runtime.answer_cache.set(
-        _answer_key(query, cache_mode),
+        _answer_key(query, cache_mode, settings),
         query,
         settings.openai_model,
         settings.prompt_version,
@@ -377,13 +392,13 @@ async def _respond_with_answer(
     return response
 
 
-@app.get("/")
-@app.head("/")
+@router.get("/")
+@router.head("/")
 async def health_root() -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
-@app.get("/health")
+@router.get("/health")
 async def health(request: Request) -> JSONResponse:
     runtime = _runtime(request)
     return JSONResponse(
@@ -395,7 +410,7 @@ async def health(request: Request) -> JSONResponse:
     )
 
 
-@app.get("/stats")
+@router.get("/stats")
 async def stats(request: Request) -> JSONResponse:
     if not _auth_ok(request):
         return JSONResponse({"code": 0, "msg": "invalid token"}, status_code=401)
@@ -422,13 +437,13 @@ async def stats(request: Request) -> JSONResponse:
             "counters": counters,
             "search_observability": await _recent_search_observability(runtime),
             "recent_errors": await runtime.metrics_store.get_recent_errors(
-                settings.stats_recent_limit
+                runtime.settings.stats_recent_limit
             ),
         }
     )
 
 
-@app.api_route("/search", methods=["GET", "POST"])
+@router.api_route("/search", methods=["GET", "POST"])
 async def search(request: Request) -> JSONResponse:
     if not _auth_ok(request):
         return _ocs_response("", None, "无效的访问令牌")
@@ -436,7 +451,7 @@ async def search(request: Request) -> JSONResponse:
     try:
         body = await _read_body(request)
         query = normalize_query(*_parse_request(body))
-        _validate_query(query)
+        _validate_query(query, request.app.state.settings)
     except RequestError as exc:
         return _ocs_response("", None, str(exc))
     except TypeError:
@@ -461,7 +476,7 @@ async def search(request: Request) -> JSONResponse:
             False,
         )
 
-    if not settings.llm_fallback_enabled:
+    if not runtime.settings.llm_fallback_enabled:
         return _ocs_response(
             query.title,
             None,

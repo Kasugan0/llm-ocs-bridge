@@ -1,17 +1,6 @@
 import os
-import sys
 
 import pytest
-
-_RELOAD_MODULES = (
-    "llm_ocs_bridge.app",
-    "llm_ocs_bridge.cache",
-    "llm_ocs_bridge.llm",
-    "llm_ocs_bridge.main",
-    "llm_ocs_bridge.metrics",
-    "llm_ocs_bridge.search",
-    "llm_ocs_bridge.config",
-)
 
 _TEST_ENV = {
     "PORT": "8009",
@@ -40,12 +29,10 @@ _TEST_ENV = {
 }
 
 
-def pytest_configure():
-    os.environ.update(_TEST_ENV)
-
-
 @pytest.fixture(autouse=True)
 def isolated_cache_path(tmp_path, monkeypatch):
+    for name, value in _TEST_ENV.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("CACHE_PATH", str(tmp_path / "llm_ocs_bridge_test.sqlite3"))
     monkeypatch.setenv("ACCESS_TOKEN", "test-access-token")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
@@ -53,8 +40,10 @@ def isolated_cache_path(tmp_path, monkeypatch):
     monkeypatch.setenv("SEARCH_CACHE_VERSION", "v3")
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "false")
     monkeypatch.setenv("EXA_API_KEY", "")
-    for module_name in _RELOAD_MODULES:
-        sys.modules.pop(module_name, None)
-    yield
-    for module_name in _RELOAD_MODULES:
-        sys.modules.pop(module_name, None)
+
+
+@pytest.fixture
+def settings():
+    from llm_ocs_bridge.config import load_settings
+
+    return load_settings(environ=os.environ)

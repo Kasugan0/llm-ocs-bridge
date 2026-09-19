@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from math import isfinite
+from pathlib import Path
 
-from dotenv import load_dotenv
-
-load_dotenv(override=False)
+from dotenv import dotenv_values
 
 
-def _bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+def _bool(values: Mapping[str, str | None], name: str, default: bool = False) -> bool:
+    value = values.get(name)
     if value is None:
         return default
     normalized = value.strip().lower()
@@ -21,8 +21,10 @@ def _bool(name: str, default: bool = False) -> bool:
     raise RuntimeError(f"{name} must be a boolean")
 
 
-def _text(name: str, *, required: bool = False) -> str | None:
-    value = os.getenv(name)
+def _text(
+    values: Mapping[str, str | None], name: str, *, required: bool = False
+) -> str | None:
+    value = values.get(name)
     if value is None or not value.strip():
         if required:
             raise RuntimeError(f"{name} is required")
@@ -31,13 +33,14 @@ def _text(name: str, *, required: bool = False) -> str | None:
 
 
 def _int(
+    values: Mapping[str, str | None],
     name: str,
     *,
     default: int | None = None,
     minimum: int = 1,
     maximum: int | None = None,
 ) -> int:
-    value = _text(name)
+    value = _text(values, name)
     if value is None:
         if default is None:
             raise RuntimeError(f"{name} is required")
@@ -55,8 +58,10 @@ def _int(
     return parsed
 
 
-def _optional_int(name: str, *, minimum: int = 1) -> int | None:
-    value = _text(name)
+def _optional_int(
+    values: Mapping[str, str | None], name: str, *, minimum: int = 1
+) -> int | None:
+    value = _text(values, name)
     if value is None:
         return None
     try:
@@ -69,13 +74,14 @@ def _optional_int(name: str, *, minimum: int = 1) -> int | None:
 
 
 def _float(
+    values: Mapping[str, str | None],
     name: str,
     *,
     minimum: float,
     maximum: float | None = None,
     minimum_inclusive: bool = True,
 ) -> float:
-    value = _text(name, required=True)
+    value = _text(values, name, required=True)
     assert value is not None
     try:
         parsed = float(value)
@@ -94,56 +100,108 @@ def _float(
 
 
 @dataclass(frozen=True, slots=True)
-class Settings:
-    host: str = _text("HOST") or "127.0.0.1"
-    port: int = _int("PORT", minimum=1, maximum=65535)
-    debug: bool = _bool("DEBUG", False)
-    app_name: str = _text("APP_NAME") or "llm-ocs-bridge"
+class StorageSettings:
+    cache_path: str
+    max_cache_bytes: int
+    cache_prune_batch_size: int
+    sqlite_busy_timeout_ms: int
 
-    openai_api_key: str | None = _text("OPENAI_API_KEY")
-    openai_base_url: str = _text("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    openai_model: str = _text("OPENAI_MODEL") or "gpt-4o-mini"
-    llm_timeout_seconds: float = _float(
-        "LLM_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
+
+@dataclass(frozen=True, slots=True)
+class Settings(StorageSettings):
+    host: str
+    port: int
+    debug: bool
+    app_name: str
+    openai_api_key: str | None = field(repr=False)
+    openai_base_url: str
+    openai_model: str
+    llm_timeout_seconds: float
+    llm_retry_backoff_seconds: float
+    access_token: str | None = field(repr=False)
+    exa_api_key: str | None = field(repr=False)
+    exa_timeout_seconds: float
+    search_result_limit: int | None
+    max_llm_retries: int
+    max_request_bytes: int
+    max_title_length: int
+    max_options_count: int
+    max_option_length: int
+    max_llm_output_tokens: int
+    max_llm_response_bytes: int
+    max_evidence_bytes: int
+    max_error_logs: int
+    max_error_message_length: int
+    stats_recent_limit: int
+    prompt_version: str
+    search_cache_version: str
+    llm_fallback_enabled: bool
+    min_search_quality_score: float
+
+
+def _environment(
+    env_path: Path | None, environ: Mapping[str, str | None] | None
+) -> Mapping[str, str | None]:
+    if environ is not None:
+        return environ
+    return {**dotenv_values(env_path or Path.cwd() / ".env"), **os.environ}
+
+
+def load_storage_settings(
+    env_path: Path | None = None, *, environ: Mapping[str, str | None] | None = None
+) -> StorageSettings:
+    values = _environment(env_path, environ)
+    return StorageSettings(
+        cache_path=_text(values, "CACHE_PATH") or "bridge.sqlite3",
+        max_cache_bytes=_int(values, "MAX_CACHE_BYTES"),
+        cache_prune_batch_size=_int(values, "CACHE_PRUNE_BATCH_SIZE"),
+        sqlite_busy_timeout_ms=_int(values, "SQLITE_BUSY_TIMEOUT_MS"),
     )
-    llm_retry_backoff_seconds: float = _float("LLM_RETRY_BACKOFF_SECONDS", minimum=0.0)
 
-    access_token: str | None = _text("ACCESS_TOKEN")
 
-    exa_api_key: str | None = _text("EXA_API_KEY")
-    exa_timeout_seconds: float = _float(
-        "EXA_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
+def load_settings(
+    env_path: Path | None = None, *, environ: Mapping[str, str | None] | None = None
+) -> Settings:
+    values = _environment(env_path, environ)
+    return Settings(
+        **asdict(load_storage_settings(environ=values)),
+        host=_text(values, "HOST") or "127.0.0.1",
+        port=_int(values, "PORT", minimum=1, maximum=65535),
+        debug=_bool(values, "DEBUG", False),
+        app_name=_text(values, "APP_NAME") or "llm-ocs-bridge",
+        openai_api_key=_text(values, "OPENAI_API_KEY"),
+        openai_base_url=_text(values, "OPENAI_BASE_URL") or "https://api.openai.com/v1",
+        openai_model=_text(values, "OPENAI_MODEL") or "gpt-4o-mini",
+        llm_timeout_seconds=_float(
+            values, "LLM_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
+        ),
+        llm_retry_backoff_seconds=_float(
+            values, "LLM_RETRY_BACKOFF_SECONDS", minimum=0.0
+        ),
+        access_token=_text(values, "ACCESS_TOKEN"),
+        exa_api_key=_text(values, "EXA_API_KEY"),
+        exa_timeout_seconds=_float(
+            values, "EXA_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
+        ),
+        search_result_limit=_optional_int(values, "SEARCH_RESULT_LIMIT"),
+        max_llm_retries=_int(values, "MAX_LLM_RETRIES", minimum=0),
+        max_request_bytes=_int(values, "MAX_REQUEST_BYTES"),
+        max_title_length=_int(values, "MAX_TITLE_LENGTH"),
+        max_options_count=_int(values, "MAX_OPTIONS_COUNT", maximum=8),
+        max_option_length=_int(values, "MAX_OPTION_LENGTH"),
+        max_llm_output_tokens=_int(values, "MAX_LLM_OUTPUT_TOKENS"),
+        max_llm_response_bytes=_int(values, "MAX_LLM_RESPONSE_BYTES"),
+        max_evidence_bytes=_int(values, "MAX_EVIDENCE_BYTES"),
+        max_error_logs=_int(values, "MAX_ERROR_LOGS"),
+        max_error_message_length=_int(values, "MAX_ERROR_MESSAGE_LENGTH"),
+        stats_recent_limit=_int(values, "STATS_RECENT_LIMIT"),
+        prompt_version=_text(values, "PROMPT_VERSION") or "v1",
+        search_cache_version=_text(values, "SEARCH_CACHE_VERSION") or "v2",
+        llm_fallback_enabled=_bool(values, "LLM_FALLBACK_ENABLED", True),
+        min_search_quality_score=_float(
+            values, "MIN_SEARCH_QUALITY_SCORE", minimum=0.0, maximum=1.0
+        ),
     )
-
-    cache_path: str = _text("CACHE_PATH") or "bridge.sqlite3"
-    search_result_limit: int | None = _optional_int("SEARCH_RESULT_LIMIT")
-    max_llm_retries: int = _int("MAX_LLM_RETRIES", minimum=0)
-
-    max_request_bytes: int = _int("MAX_REQUEST_BYTES")
-    max_title_length: int = _int("MAX_TITLE_LENGTH")
-    max_options_count: int = _int("MAX_OPTIONS_COUNT", maximum=8)
-    max_option_length: int = _int("MAX_OPTION_LENGTH")
-    max_llm_output_tokens: int = _int("MAX_LLM_OUTPUT_TOKENS")
-    max_llm_response_bytes: int = _int("MAX_LLM_RESPONSE_BYTES")
-    max_evidence_bytes: int = _int("MAX_EVIDENCE_BYTES")
-    max_cache_bytes: int = _int("MAX_CACHE_BYTES")
-    max_error_logs: int = _int("MAX_ERROR_LOGS")
-    cache_prune_batch_size: int = _int("CACHE_PRUNE_BATCH_SIZE")
-    max_error_message_length: int = _int("MAX_ERROR_MESSAGE_LENGTH")
-    stats_recent_limit: int = _int("STATS_RECENT_LIMIT")
-    sqlite_busy_timeout_ms: int = _int("SQLITE_BUSY_TIMEOUT_MS")
-
-    prompt_version: str = _text("PROMPT_VERSION") or "v1"
-    search_cache_version: str = _text("SEARCH_CACHE_VERSION") or "v2"
-    llm_fallback_enabled: bool = _bool("LLM_FALLBACK_ENABLED", True)
-    min_search_quality_score: float = _float(
-        "MIN_SEARCH_QUALITY_SCORE",
-        minimum=0.0,
-        maximum=1.0,
-    )
-
-
-settings = Settings()
 
 
 def _validate_secret(name: str, value: str | None) -> None:
@@ -153,14 +211,14 @@ def _validate_secret(name: str, value: str | None) -> None:
         raise RuntimeError(f"{name} still uses the example placeholder")
 
 
-def validate_runtime_settings() -> None:
+def validate_runtime_settings(settings: Settings) -> None:
     _validate_secret("ACCESS_TOKEN", settings.access_token)
     _validate_secret("OPENAI_API_KEY", settings.openai_api_key)
     if settings.exa_api_key:
         _validate_secret("EXA_API_KEY", settings.exa_api_key)
 
 
-def validate_check_settings() -> None:
-    validate_runtime_settings()
+def validate_check_settings(settings: Settings) -> None:
+    validate_runtime_settings(settings)
     if not settings.exa_api_key and not settings.llm_fallback_enabled:
         raise RuntimeError("EXA_API_KEY is required when LLM fallback is disabled")

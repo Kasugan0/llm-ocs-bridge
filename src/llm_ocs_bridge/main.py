@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import uvicorn
-from dotenv import load_dotenv
 
 if TYPE_CHECKING:
-    from .config import Settings
+    from .config import Settings, StorageSettings
 
 
 class CheckError(RuntimeError):
@@ -29,13 +28,11 @@ class _ArgumentParser(argparse.ArgumentParser):
         return super().format_usage().replace("usage:", "用法:", 1)
 
 
-async def _clear_cache(scope: str, cache_path: str) -> None:
+async def _clear_cache(scope: str, settings: StorageSettings) -> None:
     from .cache import AnswerCacheStore, SearchCacheStore
 
-    search_cache = SearchCacheStore(cache_path)
-    answer_cache = AnswerCacheStore(cache_path)
-    await search_cache.connect()
-    await answer_cache.connect()
+    search_cache = SearchCacheStore(settings)
+    answer_cache = AnswerCacheStore(settings)
     try:
         if scope in {"search", "all"}:
             await search_cache.clear()
@@ -135,18 +132,17 @@ def _load_settings(
     validate: bool,
     check: bool = False,
 ) -> Settings:
-    if env_path is not None:
-        load_dotenv(env_path, override=False)
     try:
         from .config import (
-            settings,
+            load_settings,
             validate_check_settings,
             validate_runtime_settings,
         )
 
+        settings = load_settings(env_path)
         if validate:
             validator = validate_check_settings if check else validate_runtime_settings
-            validator()
+            validator(settings)
     except RuntimeError as exc:
         raise CheckError(str(exc)) from exc
     return settings
@@ -165,21 +161,21 @@ def _check_cache_path(cache_path: str) -> None:
         raise CheckError(f"缓存文件不可写: {path}")
 
 
-async def _check_llm() -> None:
+async def _check_llm(settings: Settings) -> None:
     from .llm import LLMAnswerer
 
-    answerer = LLMAnswerer()
+    answerer = LLMAnswerer(settings)
     try:
         await answerer.answer("一加一等于几？", (), "", [])
     finally:
         await answerer.aclose()
 
 
-async def _check_exa(api_key: str) -> None:
+async def _check_exa(settings: Settings) -> None:
     from .models import OCSQuery
     from .search import ExaSearch
 
-    search = ExaSearch(api_key)
+    search = ExaSearch(settings)
     try:
         await search.search(OCSQuery(title="Python programming language"), 1)
     finally:
@@ -253,11 +249,11 @@ async def _check() -> int:
         _check_cache_path(settings.cache_path)
         _status("OK", f"缓存路径: {settings.cache_path}")
 
-        await _check_llm()
+        await _check_llm(settings)
         _status("OK", f"LLM: {settings.openai_model}")
 
         if settings.exa_api_key:
-            await _check_exa(settings.exa_api_key)
+            await _check_exa(settings)
             _status("OK", "Exa Search")
         else:
             _status(
@@ -287,15 +283,22 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     if args.command == "clear-cache":
         try:
-            settings = _load_settings(validate=False)
-        except CheckError as exc:
+            from .config import load_storage_settings
+
+            storage_settings = load_storage_settings()
+        except RuntimeError as exc:
             _exit_with_config_error(parser, exc)
-        asyncio.run(_clear_cache(args.scope, settings.cache_path))
+        asyncio.run(_clear_cache(args.scope, storage_settings))
         return
 
     try:
         settings = _load_settings(validate=True)
-        from .app import app
     except (CheckError, RuntimeError) as exc:
         _exit_with_config_error(parser, exc)
-    uvicorn.run(app, host=settings.host, port=settings.port, reload=settings.debug)
+    uvicorn.run(
+        "llm_ocs_bridge.app:create_app",
+        factory=True,
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+    )

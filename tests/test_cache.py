@@ -7,7 +7,9 @@ from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.utils import cache_key
 
 
-def test_answer_cache_key_isolates_prompt_version():
+def test_answer_cache_key_isolates_prompt_version(
+    settings,
+):
     query = OCSQuery(title="题目", options=("选项",), question_type="single")
     v1 = cache_key(
         "answer",
@@ -32,7 +34,9 @@ def test_answer_cache_key_isolates_prompt_version():
     assert v1 != v2
 
 
-def test_answer_cache_key_isolates_search_version_and_answer_mode():
+def test_answer_cache_key_isolates_search_version_and_answer_mode(
+    settings,
+):
     query = OCSQuery(title="题目", options=("选项",), question_type="single")
     search_v1 = cache_key(
         "answer",
@@ -69,7 +73,9 @@ def test_answer_cache_key_isolates_search_version_and_answer_mode():
     assert search_v2 != fallback_answer
 
 
-def test_search_cache_key_isolates_full_question_semantics():
+def test_search_cache_key_isolates_full_question_semantics(
+    settings,
+):
     base = cache_key(
         "search",
         "Python是什么",
@@ -108,7 +114,7 @@ def test_search_cache_key_isolates_full_question_semantics():
     assert base != different_limit
 
 
-def test_search_and_answer_cache_stores(tmp_path):
+def test_search_and_answer_cache_stores(settings, tmp_path):
     from llm_ocs_bridge.cache import (
         AnswerCacheStore,
         SearchCacheStore,
@@ -118,8 +124,12 @@ def test_search_and_answer_cache_stores(tmp_path):
 
     async def run() -> None:
         query = OCSQuery(title="题目", options=("A.1", "B.2"), question_type="single")
-        search = SearchCacheStore(str(tmp_path / "cache.sqlite3"))
-        answer = AnswerCacheStore(str(tmp_path / "cache.sqlite3"))
+        search = SearchCacheStore(
+            replace(settings, cache_path=str(tmp_path / "cache.sqlite3"))
+        )
+        answer = AnswerCacheStore(
+            replace(settings, cache_path=str(tmp_path / "cache.sqlite3"))
+        )
         await search.connect()
         await answer.connect()
         try:
@@ -153,11 +163,13 @@ def test_search_and_answer_cache_stores(tmp_path):
     asyncio.run(run())
 
 
-def test_metrics_store_atomic_counters(tmp_path):
+def test_metrics_store_atomic_counters(settings, tmp_path):
     from llm_ocs_bridge.metrics import MetricsStore
 
     async def run() -> None:
-        store = MetricsStore(str(tmp_path / "metrics.sqlite3"))
+        store = MetricsStore(
+            replace(settings, cache_path=str(tmp_path / "metrics.sqlite3"))
+        )
         await store.connect()
         try:
             await asyncio.gather(*(store.incr("search_requests") for _ in range(20)))
@@ -169,12 +181,15 @@ def test_metrics_store_atomic_counters(tmp_path):
     asyncio.run(run())
 
 
-def test_sqlite_write_lock_supports_multiple_connections(tmp_path):
+def test_sqlite_write_lock_supports_multiple_connections(settings, tmp_path):
     from llm_ocs_bridge.metrics import MetricsStore
 
     async def run() -> None:
         path = str(tmp_path / "concurrent.sqlite3")
-        stores = [MetricsStore(path), MetricsStore(path)]
+        stores = [
+            MetricsStore(replace(settings, cache_path=path)),
+            MetricsStore(replace(settings, cache_path=path)),
+        ]
         await asyncio.gather(*(store.connect() for store in stores))
         try:
             await asyncio.gather(
@@ -191,25 +206,24 @@ def test_sqlite_write_lock_supports_multiple_connections(tmp_path):
     asyncio.run(run())
 
 
-def test_sqlite_capacity_counts_main_wal_and_shm(tmp_path):
+def test_sqlite_capacity_counts_main_wal_and_shm(settings, tmp_path):
     from llm_ocs_bridge.storage import AsyncSQLiteStore
 
     path = tmp_path / "sized.sqlite3"
     path.write_bytes(b"a" * 3)
     (tmp_path / "sized.sqlite3-wal").write_bytes(b"b" * 5)
     (tmp_path / "sized.sqlite3-shm").write_bytes(b"c" * 7)
-    store = AsyncSQLiteStore(str(path))
+    store = AsyncSQLiteStore(replace(settings, cache_path=str(path)))
 
     assert store.database_size_bytes() == 15
 
 
-def test_sqlite_capacity_prunes_oldest_cache_entry(tmp_path, monkeypatch):
-    from llm_ocs_bridge import storage as storage_module
+def test_sqlite_capacity_prunes_oldest_cache_entry(settings, tmp_path, monkeypatch):
     from llm_ocs_bridge.cache import SearchCacheStore
 
     async def run() -> None:
         path = str(tmp_path / "capacity.sqlite3")
-        store = SearchCacheStore(path)
+        store = SearchCacheStore(replace(settings, cache_path=path))
         await store.connect()
         try:
             await store._checkpoint(await store._db())
@@ -224,11 +238,7 @@ def test_sqlite_capacity_prunes_oldest_cache_entry(tmp_path, monkeypatch):
                 '"snippet":"' + "x" * 20000 + '","source":"exa"}]',
                 "v2",
             )
-            monkeypatch.setattr(
-                storage_module,
-                "settings",
-                replace(storage_module.settings, max_cache_bytes=baseline + 10000),
-            )
+            store.settings = replace(store.settings, max_cache_bytes=baseline + 10000)
             await store.delete("missing-entry")
             assert await store.get("old-entry") is None
             assert store.database_size_bytes() <= baseline + 10000
@@ -238,12 +248,12 @@ def test_sqlite_capacity_prunes_oldest_cache_entry(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_sqlite_files_are_private_after_connect(tmp_path):
+def test_sqlite_files_are_private_after_connect(settings, tmp_path):
     from llm_ocs_bridge.cache import SearchCacheStore
 
     async def run() -> None:
         path = tmp_path / "private.sqlite3"
-        store = SearchCacheStore(str(path))
+        store = SearchCacheStore(replace(settings, cache_path=str(path)))
         await store.connect()
         candidates = (
             path,
@@ -258,7 +268,9 @@ def test_sqlite_files_are_private_after_connect(tmp_path):
     asyncio.run(run())
 
 
-def test_decode_search_results_discards_malformed_fields():
+def test_decode_search_results_discards_malformed_fields(
+    settings,
+):
     from llm_ocs_bridge.cache import decode_search_results
 
     payload = (
@@ -280,12 +292,14 @@ def test_decode_search_results_discards_malformed_fields():
     ]
 
 
-def test_metrics_sanitize_error_messages(monkeypatch, tmp_path):
+def test_metrics_sanitize_error_messages(settings, monkeypatch, tmp_path):
     metrics_module = importlib.import_module("llm_ocs_bridge.metrics")
     MetricsStore = metrics_module.MetricsStore
 
     async def run() -> None:
-        store = MetricsStore(str(tmp_path / "errors.sqlite3"))
+        store = MetricsStore(
+            replace(settings, cache_path=str(tmp_path / "errors.sqlite3"))
+        )
         await store.connect()
         try:
             await store.log_error(
@@ -299,9 +313,5 @@ def test_metrics_sanitize_error_messages(monkeypatch, tmp_path):
         finally:
             await store.close()
 
-    monkeypatch.setattr(
-        metrics_module,
-        "settings",
-        replace(metrics_module.settings, max_error_message_length=32),
-    )
+    settings = replace(settings, max_error_message_length=32)
     asyncio.run(run())

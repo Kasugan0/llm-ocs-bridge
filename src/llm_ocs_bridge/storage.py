@@ -9,7 +9,7 @@ from typing import ClassVar
 
 import aiosqlite
 
-from .config import settings
+from .config import StorageSettings
 
 _PRUNABLE_TABLES = {
     "search_cache": "created_at",
@@ -25,8 +25,9 @@ class PostCommitError(RuntimeError):
 class AsyncSQLiteStore:
     _write_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
-    def __init__(self, path: str) -> None:
-        self.path = str(Path(path).expanduser().resolve())
+    def __init__(self, settings: StorageSettings) -> None:
+        self.settings = settings
+        self.path = str(Path(settings.cache_path).expanduser().resolve())
         self._conn: aiosqlite.Connection | None = None
         self._connect_lock = asyncio.Lock()
         self._write_lock = self._write_locks.setdefault(self.path, asyncio.Lock())
@@ -41,12 +42,12 @@ class AsyncSQLiteStore:
                 self._prepare_database_file()
                 conn = await aiosqlite.connect(
                     self.path,
-                    timeout=settings.sqlite_busy_timeout_ms / 1000,
+                    timeout=self.settings.sqlite_busy_timeout_ms / 1000,
                 )
                 try:
                     conn.row_factory = aiosqlite.Row
                     await conn.execute(
-                        f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}"
+                        f"PRAGMA busy_timeout={self.settings.sqlite_busy_timeout_ms}"
                     )
                     await conn.execute("PRAGMA journal_mode=WAL")
                     await conn.execute("PRAGMA synchronous=NORMAL")
@@ -97,12 +98,12 @@ class AsyncSQLiteStore:
         )
 
     async def _enforce_capacity_locked(self, db: aiosqlite.Connection) -> None:
-        if self.database_size_bytes() <= settings.max_cache_bytes:
+        if self.database_size_bytes() <= self.settings.max_cache_bytes:
             return
         await self._checkpoint(db)
-        if self.database_size_bytes() <= settings.max_cache_bytes:
+        if self.database_size_bytes() <= self.settings.max_cache_bytes:
             return
-        while await self._live_size_bytes(db) > settings.max_cache_bytes:
+        while await self._live_size_bytes(db) > self.settings.max_cache_bytes:
             rows = await self._oldest_rows(db)
             if not rows:
                 raise RuntimeError("SQLite database exceeds MAX_CACHE_BYTES")
@@ -121,7 +122,7 @@ class AsyncSQLiteStore:
             pass
         await self._checkpoint(db)
         self._secure_file_permissions()
-        if self.database_size_bytes() > settings.max_cache_bytes:
+        if self.database_size_bytes() > self.settings.max_cache_bytes:
             raise RuntimeError("SQLite database exceeds MAX_CACHE_BYTES")
 
     async def _checkpoint(self, db: aiosqlite.Connection) -> None:
@@ -157,14 +158,14 @@ class AsyncSQLiteStore:
                 ORDER BY {timestamp_column}, rowid
                 LIMIT ?
                 """,
-                (settings.cache_prune_batch_size,),
+                (self.settings.cache_prune_batch_size,),
             )
             rows.extend(
                 (int(row["created_at"]), table, int(row["rowid"]))
                 for row in await cursor.fetchall()
             )
             await cursor.close()
-        return sorted(rows)[: settings.cache_prune_batch_size]
+        return sorted(rows)[: self.settings.cache_prune_batch_size]
 
     @staticmethod
     def _group_rows(rows: list[tuple[int, str, int]]) -> dict[str, list[int]]:

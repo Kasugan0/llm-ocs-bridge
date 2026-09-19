@@ -3,7 +3,7 @@ import importlib
 import json
 import os
 import sys
-from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -26,7 +26,9 @@ def _settings(tmp_path, **overrides):
         "port": 8009,
     }
     values.update(overrides)
-    return SimpleNamespace(**values)
+    from llm_ocs_bridge.config import load_settings
+
+    return replace(load_settings(environ=os.environ), **values)
 
 
 def _env_file(tmp_path, mode=0o600):
@@ -36,11 +38,11 @@ def _env_file(tmp_path, mode=0o600):
     return path
 
 
-def test_clear_cache_all(tmp_path):
+def test_clear_cache_all(settings, tmp_path):
     async def run() -> None:
         path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(path)
-        answer_cache = AnswerCacheStore(path)
+        search_cache = SearchCacheStore(replace(settings, cache_path=path))
+        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
         query = OCSQuery(title="题目", options=("A.1",), question_type="single")
         search_key = cache_key(
             "search",
@@ -83,7 +85,7 @@ def test_clear_cache_all(tmp_path):
             await search_cache.close()
             await answer_cache.close()
 
-        await _clear_cache("all", path)
+        await _clear_cache("all", replace(settings, cache_path=path))
 
         await search_cache.connect()
         await answer_cache.connect()
@@ -97,11 +99,11 @@ def test_clear_cache_all(tmp_path):
     asyncio.run(run())
 
 
-def test_clear_cache_search_scope(tmp_path):
+def test_clear_cache_search_scope(settings, tmp_path):
     async def run() -> None:
         path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(path)
-        answer_cache = AnswerCacheStore(path)
+        search_cache = SearchCacheStore(replace(settings, cache_path=path))
+        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
         query = OCSQuery(title="题目", options=("A.1",), question_type="single")
         search_key = cache_key(
             "search",
@@ -144,7 +146,7 @@ def test_clear_cache_search_scope(tmp_path):
             await search_cache.close()
             await answer_cache.close()
 
-        await _clear_cache("search", path)
+        await _clear_cache("search", replace(settings, cache_path=path))
 
         await search_cache.connect()
         await answer_cache.connect()
@@ -158,11 +160,11 @@ def test_clear_cache_search_scope(tmp_path):
     asyncio.run(run())
 
 
-def test_clear_cache_answer_scope(tmp_path):
+def test_clear_cache_answer_scope(settings, tmp_path):
     async def run() -> None:
         path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(path)
-        answer_cache = AnswerCacheStore(path)
+        search_cache = SearchCacheStore(replace(settings, cache_path=path))
+        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
         query = OCSQuery(title="题目", options=("A.1",), question_type="single")
         search_key = cache_key(
             "search",
@@ -205,7 +207,7 @@ def test_clear_cache_answer_scope(tmp_path):
             await search_cache.close()
             await answer_cache.close()
 
-        await _clear_cache("answer", path)
+        await _clear_cache("answer", replace(settings, cache_path=path))
 
         await search_cache.connect()
         await answer_cache.connect()
@@ -219,7 +221,7 @@ def test_clear_cache_answer_scope(tmp_path):
     asyncio.run(run())
 
 
-def test_help_works_with_invalid_environment(monkeypatch, capsys):
+def test_help_works_with_invalid_environment(settings, monkeypatch, capsys):
     monkeypatch.setenv("PORT", "invalid")
 
     with pytest.raises(SystemExit) as exc_info:
@@ -241,7 +243,7 @@ def test_help_works_with_invalid_environment(monkeypatch, capsys):
         (["clear-cache", "--help"], "清理范围，默认 all"),
     ],
 )
-def test_subcommand_help_is_chinese(argv, expected, capsys):
+def test_subcommand_help_is_chinese(settings, argv, expected, capsys):
     with pytest.raises(SystemExit) as exc_info:
         main_module.run(argv)
 
@@ -253,7 +255,7 @@ def test_subcommand_help_is_chinese(argv, expected, capsys):
     assert expected in output
 
 
-def test_check_fails_when_env_file_is_missing(tmp_path, monkeypatch, capsys):
+def test_check_fails_when_env_file_is_missing(settings, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 
     assert asyncio.run(main_module._check()) == 1
@@ -264,7 +266,9 @@ def test_check_fails_when_env_file_is_missing(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
-def test_check_fails_when_env_permissions_are_insecure(tmp_path, monkeypatch, capsys):
+def test_check_fails_when_env_permissions_are_insecure(
+    settings, tmp_path, monkeypatch, capsys
+):
     _env_file(tmp_path, 0o644)
     monkeypatch.chdir(tmp_path)
 
@@ -275,7 +279,7 @@ def test_check_fails_when_env_permissions_are_insecure(tmp_path, monkeypatch, ca
     assert "权限必须为 0600" in captured.err
 
 
-def test_check_reports_invalid_configuration(tmp_path, monkeypatch, capsys):
+def test_check_reports_invalid_configuration(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PORT", "invalid")
@@ -288,13 +292,13 @@ def test_check_reports_invalid_configuration(tmp_path, monkeypatch, capsys):
     assert "PORT must be an integer" in captured.err
 
 
-def test_check_outputs_importable_ocs_config(tmp_path, monkeypatch, capsys):
+def test_check_outputs_importable_ocs_config(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     settings = _settings(tmp_path)
     llm_checked = False
 
-    async def check_llm():
+    async def check_llm(_settings):
         nonlocal llm_checked
         llm_checked = True
 
@@ -329,18 +333,18 @@ def test_check_outputs_importable_ocs_config(tmp_path, monkeypatch, capsys):
     assert wrapper["handler"].endswith("[res.msg, undefined]")
 
 
-def test_check_calls_exa_when_configured(tmp_path, monkeypatch, capsys):
+def test_check_calls_exa_when_configured(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     settings = _settings(tmp_path, exa_api_key="test-exa-key")
     checked_key = None
 
-    async def check_llm():
+    async def check_llm(_settings):
         return None
 
-    async def check_exa(api_key):
+    async def check_exa(config):
         nonlocal checked_key
-        checked_key = api_key
+        checked_key = config.exa_api_key
 
     monkeypatch.setattr(
         main_module, "_load_settings", lambda *_args, **_kwargs: settings
@@ -354,12 +358,12 @@ def test_check_calls_exa_when_configured(tmp_path, monkeypatch, capsys):
     assert "[OK] Exa Search" in capsys.readouterr().err
 
 
-def test_check_redacts_provider_errors(tmp_path, monkeypatch, capsys):
+def test_check_redacts_provider_errors(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     settings = _settings(tmp_path)
 
-    async def check_llm():
+    async def check_llm(_settings):
         raise RuntimeError("Authorization: Bearer sk-secret-value")
 
     monkeypatch.setattr(
@@ -383,17 +387,20 @@ def test_check_redacts_provider_errors(tmp_path, monkeypatch, capsys):
         ("::1", "http://[::1]:8009/search"),
     ],
 )
-def test_ocs_config_uses_connectable_host(tmp_path, host, expected):
+def test_ocs_config_uses_connectable_host(settings, tmp_path, host, expected):
     config = main_module._ocs_config(_settings(tmp_path, host=host))
 
     assert config[0]["url"] == expected
 
 
-def test_llm_check_closes_client_on_failure(monkeypatch):
+def test_llm_check_closes_client_on_failure(settings, monkeypatch):
     llm_module = importlib.import_module("llm_ocs_bridge.llm")
     closed = False
 
     class FakeAnswerer:
+        def __init__(self, settings):
+            self.settings = settings
+
         async def answer(self, *_args):
             raise RuntimeError("failed")
 
@@ -404,17 +411,17 @@ def test_llm_check_closes_client_on_failure(monkeypatch):
     monkeypatch.setattr(llm_module, "LLMAnswerer", FakeAnswerer)
 
     with pytest.raises(RuntimeError, match="failed"):
-        asyncio.run(main_module._check_llm())
+        asyncio.run(main_module._check_llm(settings))
     assert closed is True
 
 
-def test_exa_check_closes_client_on_failure(monkeypatch):
+def test_exa_check_closes_client_on_failure(settings, monkeypatch):
     search_module = importlib.import_module("llm_ocs_bridge.search")
     closed = False
 
     class FakeSearch:
-        def __init__(self, api_key):
-            assert api_key == "test-exa-key"
+        def __init__(self, settings):
+            assert settings.exa_api_key == "test-exa-key"
 
         async def search(self, *_args):
             raise RuntimeError("failed")
@@ -426,5 +433,57 @@ def test_exa_check_closes_client_on_failure(monkeypatch):
     monkeypatch.setattr(search_module, "ExaSearch", FakeSearch)
 
     with pytest.raises(RuntimeError, match="failed"):
-        asyncio.run(main_module._check_exa("test-exa-key"))
+        asyncio.run(
+            main_module._check_exa(replace(settings, exa_api_key="test-exa-key"))
+        )
     assert closed is True
+
+
+def test_clear_cache_ignores_invalid_llm_configuration(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "invalid")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    main_module.run(["clear-cache", "--scope", "all"])
+
+
+def test_debug_server_starts_in_subprocess(tmp_path, monkeypatch):
+    import signal
+    import socket
+    import subprocess
+    import time
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
+    monkeypatch.chdir(tmp_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    environment = {
+        **os.environ,
+        "DEBUG": "true",
+        "HOST": "127.0.0.1",
+        "PORT": str(port),
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-c", "from llm_ocs_bridge.main import run; run()"],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise AssertionError(process.communicate()[1].decode())
+            try:
+                url = f"http://127.0.0.1:{port}/health"
+                with urlopen(url, timeout=0.2) as response:
+                    assert json.load(response)["status"] == "ok"
+                    return
+            except (URLError, TimeoutError):
+                time.sleep(0.05)
+        raise AssertionError("DEBUG server did not start")
+    finally:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=10)

@@ -6,10 +6,10 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_cancelled_write_rolls_back(tmp_path):
+async def test_cancelled_write_rolls_back(settings, tmp_path):
     from llm_ocs_bridge.metrics import MetricsStore
 
-    store = MetricsStore(str(tmp_path / "cancel.sqlite3"))
+    store = MetricsStore(replace(settings, cache_path=str(tmp_path / "cancel.sqlite3")))
     await store.connect()
     inserted = asyncio.Event()
 
@@ -36,10 +36,14 @@ async def test_cancelled_write_rolls_back(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_connection_is_not_published_until_initialized(tmp_path, monkeypatch):
+async def test_connection_is_not_published_until_initialized(
+    settings, tmp_path, monkeypatch
+):
     from llm_ocs_bridge.metrics import MetricsStore
 
-    store = MetricsStore(str(tmp_path / "initialize.sqlite3"))
+    store = MetricsStore(
+        replace(settings, cache_path=str(tmp_path / "initialize.sqlite3"))
+    )
     initializing = asyncio.Event()
     release = asyncio.Event()
     initialize = store._init_db
@@ -65,7 +69,7 @@ async def test_connection_is_not_published_until_initialized(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_configuration_failure_closes_connection(tmp_path, monkeypatch):
+async def test_configuration_failure_closes_connection(settings, tmp_path, monkeypatch):
     from llm_ocs_bridge.metrics import MetricsStore
 
     connections = []
@@ -84,7 +88,7 @@ async def test_configuration_failure_closes_connection(tmp_path, monkeypatch):
 
     monkeypatch.setattr(aiosqlite, "connect", connect)
     monkeypatch.setattr(aiosqlite.Connection, "execute", fail_pragma)
-    store = MetricsStore(str(tmp_path / "failed.sqlite3"))
+    store = MetricsStore(replace(settings, cache_path=str(tmp_path / "failed.sqlite3")))
     try:
         with pytest.raises(RuntimeError, match="synthetic"):
             await store.connect()
@@ -97,19 +101,18 @@ async def test_configuration_failure_closes_connection(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_capacity_reclaims_wal_before_evicting(tmp_path, monkeypatch):
-    from llm_ocs_bridge import storage
+async def test_capacity_reclaims_wal_before_evicting(settings, tmp_path, monkeypatch):
     from llm_ocs_bridge.cache import SearchCacheStore
     from llm_ocs_bridge.models import OCSQuery
 
-    store = SearchCacheStore(str(tmp_path / "wal.sqlite3"))
+    store = SearchCacheStore(
+        replace(settings, cache_path=str(tmp_path / "wal.sqlite3"))
+    )
     try:
         for index in range(12):
             await store.set(str(index), OCSQuery("water", (), ""), "exa", 1, "[]", "v3")
         assert store.database_size_bytes() > 65536
-        monkeypatch.setattr(
-            storage, "settings", replace(storage.settings, max_cache_bytes=65536)
-        )
+        store.settings = replace(store.settings, max_cache_bytes=65536)
         await store.delete("absent")
         assert store.database_size_bytes() <= 65536
         assert all([await store.get(str(index)) is not None for index in range(12)])
@@ -119,11 +122,13 @@ async def test_capacity_reclaims_wal_before_evicting(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancelled_initialization_closes_unpublished_connection(
-    tmp_path, monkeypatch
+    settings, tmp_path, monkeypatch
 ):
     from llm_ocs_bridge.metrics import MetricsStore
 
-    store = MetricsStore(str(tmp_path / "init-cancel.sqlite3"))
+    store = MetricsStore(
+        replace(settings, cache_path=str(tmp_path / "init-cancel.sqlite3"))
+    )
     initializing = asyncio.Event()
     connections = []
 
@@ -144,11 +149,15 @@ async def test_cancelled_initialization_closes_unpublished_connection(
 
 
 @pytest.mark.asyncio
-async def test_post_commit_failure_does_not_claim_rollback(tmp_path, monkeypatch):
+async def test_post_commit_failure_does_not_claim_rollback(
+    settings, tmp_path, monkeypatch
+):
     from llm_ocs_bridge.metrics import MetricsStore
     from llm_ocs_bridge.storage import PostCommitError
 
-    store = MetricsStore(str(tmp_path / "committed.sqlite3"))
+    store = MetricsStore(
+        replace(settings, cache_path=str(tmp_path / "committed.sqlite3"))
+    )
     await store.connect()
     attempts = 0
 
@@ -169,12 +178,15 @@ async def test_post_commit_failure_does_not_claim_rollback(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_capacity_vacuums_once_for_multiple_prune_batches(tmp_path, monkeypatch):
-    from llm_ocs_bridge import storage
+async def test_capacity_vacuums_once_for_multiple_prune_batches(
+    settings, tmp_path, monkeypatch
+):
     from llm_ocs_bridge.cache import SearchCacheStore
     from llm_ocs_bridge.models import OCSQuery
 
-    store = SearchCacheStore(str(tmp_path / "prune.sqlite3"))
+    store = SearchCacheStore(
+        replace(settings, cache_path=str(tmp_path / "prune.sqlite3"))
+    )
     statements = []
     try:
         for index in range(12):
@@ -183,10 +195,8 @@ async def test_capacity_vacuums_once_for_multiple_prune_batches(tmp_path, monkey
             )
         connection = await store._db()
         await connection.set_trace_callback(statements.append)
-        monkeypatch.setattr(
-            storage,
-            "settings",
-            replace(storage.settings, max_cache_bytes=65536, cache_prune_batch_size=1),
+        store.settings = replace(
+            store.settings, max_cache_bytes=65536, cache_prune_batch_size=1
         )
         await store.delete("absent")
         assert store.database_size_bytes() <= 65536

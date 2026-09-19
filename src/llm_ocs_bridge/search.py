@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from urllib.parse import urlparse
 
-from .config import settings
+from .config import Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
 from .utils import question_terms, render_search_query
 
@@ -12,8 +12,9 @@ from .utils import question_terms, render_search_query
 class ExaSearch:
     name = "exa"
 
-    def __init__(self, api_key: str | None) -> None:
-        self.api_key = api_key
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.api_key = settings.exa_api_key
         self._client: Any | None = None
 
     @property
@@ -47,7 +48,7 @@ class ExaSearch:
         }
         if limit is not None:
             kwargs["num_results"] = limit
-        async with asyncio.timeout(settings.exa_timeout_seconds):
+        async with asyncio.timeout(self.settings.exa_timeout_seconds):
             response = await client.search(render_search_query(query), **kwargs)
 
         raw_results = getattr(response, "results", []) or []
@@ -56,7 +57,7 @@ class ExaSearch:
         results = self._map_results(raw_results)
         results = [result for result in results if self._is_valid_result(result)]
         score = self.score_results(query, results, limit)
-        if score < settings.min_search_quality_score:
+        if score < self.settings.min_search_quality_score:
             return [], score
         return results, score
 

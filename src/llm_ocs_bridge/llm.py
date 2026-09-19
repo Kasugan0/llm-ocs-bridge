@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Sequence
 
 import httpx
 
-from .config import settings
+from .config import Settings
 from .models import SearchResult
 from .utils import (
     format_options_for_prompt,
@@ -43,17 +43,13 @@ class TransientLLMError(LLMError):
 
 
 class LLMAnswerer:
-    def __init__(
-        self,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        model: str | None = None,
-    ) -> None:
-        self.api_key = api_key or settings.openai_api_key
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.api_key = settings.openai_api_key
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is required")
-        self.base_url = base_url or settings.openai_base_url
-        self.model = model or settings.openai_model
+        self.base_url = settings.openai_base_url
+        self.model = settings.openai_model
         self._client: httpx.AsyncClient | None = None
 
     async def answer(
@@ -66,10 +62,12 @@ class LLMAnswerer:
     ) -> str:
         normalized_options = normalize_query("", options, question_type).options
         formatted_options = format_options_for_prompt(normalized_options)
-        evidence_text = format_search_context(evidence, settings.max_evidence_bytes)
+        evidence_text = format_search_context(
+            evidence, self.settings.max_evidence_bytes
+        )
         previous_invalid_response = ""
 
-        for attempt in range(settings.max_llm_retries + 1):
+        for attempt in range(self.settings.max_llm_retries + 1):
             messages = self._build_messages(
                 title,
                 formatted_options,
@@ -80,18 +78,18 @@ class LLMAnswerer:
             try:
                 raw = await self._call_model(messages, on_attempt)
             except TransientLLMError:
-                if attempt == settings.max_llm_retries:
+                if attempt == self.settings.max_llm_retries:
                     raise
             else:
                 payload = self._parse_payload(raw)
                 answer = normalize_answer_payload(payload, question_type)
                 if validate_answer(answer, question_type, normalized_options):
                     return answer
-                if attempt == settings.max_llm_retries:
+                if attempt == self.settings.max_llm_retries:
                     raise InvalidAnswerError("答案格式不合法")
                 previous_invalid_response = raw
 
-            await asyncio.sleep(settings.llm_retry_backoff_seconds * (2**attempt))
+            await asyncio.sleep(self.settings.llm_retry_backoff_seconds * (2**attempt))
 
         raise AssertionError("unreachable")
 
@@ -106,7 +104,7 @@ class LLMAnswerer:
         on_attempt: AttemptHook | None = None,
     ) -> str:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=settings.llm_timeout_seconds)
+            self._client = httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds)
 
         if on_attempt is not None:
             await on_attempt()
@@ -123,7 +121,7 @@ class LLMAnswerer:
                     "model": self.model,
                     "messages": messages,
                     "temperature": 0.1,
-                    "max_tokens": settings.max_llm_output_tokens,
+                    "max_tokens": self.settings.max_llm_output_tokens,
                 },
             ) as response:
                 response.raise_for_status()
@@ -135,7 +133,7 @@ class LLMAnswerer:
                         declared_bytes = None
                     if (
                         declared_bytes is not None
-                        and declared_bytes > settings.max_llm_response_bytes
+                        and declared_bytes > self.settings.max_llm_response_bytes
                     ):
                         raise ResponseTooLargeError("LLM 响应超过大小限制")
 
@@ -143,7 +141,7 @@ class LLMAnswerer:
                 total_bytes = 0
                 async for chunk in response.aiter_bytes():
                     total_bytes += len(chunk)
-                    if total_bytes > settings.max_llm_response_bytes:
+                    if total_bytes > self.settings.max_llm_response_bytes:
                         raise ResponseTooLargeError("LLM 响应超过大小限制")
                     chunks.append(chunk)
         except httpx.HTTPStatusError as exc:
