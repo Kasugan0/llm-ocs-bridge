@@ -5,7 +5,7 @@ import time
 import aiosqlite
 
 from .config import Settings
-from .storage import AsyncSQLiteStore
+from .storage import Database
 from .utils import sanitize_error
 
 _COUNTERS = (
@@ -22,40 +22,17 @@ _COUNTERS = (
 )
 
 
-class MetricsStore(AsyncSQLiteStore):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(settings)
+class MetricsStore:
+    def __init__(self, db: Database, settings: Settings) -> None:
+        self.db = db
         self.settings = settings
 
-    async def _init_db(self, db: aiosqlite.Connection) -> None:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS metric_counters (
-                metric TEXT PRIMARY KEY,
-                value INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )
-            """
-        )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS error_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                error_type TEXT NOT NULL,
-                error_msg TEXT
-            )
-            """
-        )
-        await db.commit()
-
     async def incr(self, metric: str, delta: int = 1) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await self._incr(db, metric, delta)
 
     async def incr_many(self, metrics: dict[str, int]) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             for metric, delta in metrics.items():
                 await self._incr(db, metric, delta)
 
@@ -86,7 +63,7 @@ class MetricsStore(AsyncSQLiteStore):
         provider = sanitize_error(provider, self.settings.max_error_message_length)
         error_type = sanitize_error(error_type, self.settings.max_error_message_length)
         message = sanitize_error(error_msg, self.settings.max_error_message_length)
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute(
                 """
                 INSERT INTO error_log (timestamp, provider, error_type, error_msg)
@@ -105,45 +82,46 @@ class MetricsStore(AsyncSQLiteStore):
             )
 
     async def get_counters(self) -> dict[str, int]:
-        db = await self._db()
-        cursor = await db.execute("SELECT metric, value FROM metric_counters")
-        rows = await cursor.fetchall()
-        await cursor.close()
-        values = dict.fromkeys(_COUNTERS, 0)
-        for row in rows:
-            values[str(row["metric"])] = int(row["value"])
-        return values
+        async with self.db.read() as db:
+            cursor = await db.execute("SELECT metric, value FROM metric_counters")
+            rows = await cursor.fetchall()
+            await cursor.close()
+            values = dict.fromkeys(_COUNTERS, 0)
+            for row in rows:
+                values[str(row["metric"])] = int(row["value"])
+            return values
 
     async def get_recent_errors(self, limit: int = 10) -> list[dict[str, str | int]]:
         limit = min(max(limit, 0), self.settings.max_error_logs)
-        db = await self._db()
-        cursor = await db.execute(
-            """
-            SELECT timestamp, provider, error_type, error_msg
-            FROM error_log
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [
-            {
-                "timestamp": int(row["timestamp"]),
-                "provider": sanitize_error(
-                    str(row["provider"]), self.settings.max_error_message_length
-                ),
-                "error": (
-                    sanitize_error(
-                        f"{row['error_type']}: {row['error_msg']}",
-                        self.settings.max_error_message_length,
-                    )
-                    if row["error_msg"]
-                    else sanitize_error(
-                        str(row["error_type"]), self.settings.max_error_message_length
-                    )
-                ),
-            }
-            for row in rows
-        ]
+        async with self.db.read() as db:
+            cursor = await db.execute(
+                """
+                SELECT timestamp, provider, error_type, error_msg
+                FROM error_log
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [
+                {
+                    "timestamp": int(row["timestamp"]),
+                    "provider": sanitize_error(
+                        str(row["provider"]), self.settings.max_error_message_length
+                    ),
+                    "error": (
+                        sanitize_error(
+                            f"{row['error_type']}: {row['error_msg']}",
+                            self.settings.max_error_message_length,
+                        )
+                        if row["error_msg"]
+                        else sanitize_error(
+                            str(row["error_type"]),
+                            self.settings.max_error_message_length,
+                        )
+                    ),
+                }
+                for row in rows
+            ]

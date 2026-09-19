@@ -5,7 +5,6 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import ClassVar
 
 import aiosqlite
 
@@ -18,67 +17,98 @@ _PRUNABLE_TABLES = {
 }
 
 
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS error_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_msg TEXT
+);
+CREATE TABLE IF NOT EXISTS metric_counters (
+    metric TEXT PRIMARY KEY,
+    value INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS search_cache (
+    cache_key TEXT PRIMARY KEY,
+    query_title TEXT NOT NULL,
+    query_options TEXT NOT NULL,
+    query_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    quality_score REAL NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    search_cache_version TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS answer_cache (
+    cache_key TEXT PRIMARY KEY,
+    query_title TEXT NOT NULL,
+    query_options TEXT NOT NULL,
+    query_type TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+"""
+
+
 class PostCommitError(RuntimeError):
     pass
 
 
-class AsyncSQLiteStore:
-    _write_locks: ClassVar[dict[str, asyncio.Lock]] = {}
-
+class Database:
     def __init__(self, settings: StorageSettings) -> None:
         self.settings = settings
         self.path = str(Path(settings.cache_path).expanduser().resolve())
         self._conn: aiosqlite.Connection | None = None
-        self._connect_lock = asyncio.Lock()
-        self._write_lock = self._write_locks.setdefault(self.path, asyncio.Lock())
+        self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        if self._conn is not None:
-            return
-        async with self._connect_lock:
+        async with self._lock:
             if self._conn is not None:
                 return
-            async with self._write_lock:
-                self._prepare_database_file()
-                conn = await aiosqlite.connect(
-                    self.path,
-                    timeout=self.settings.sqlite_busy_timeout_ms / 1000,
-                )
-                try:
-                    conn.row_factory = aiosqlite.Row
-                    await conn.execute(
-                        f"PRAGMA busy_timeout={self.settings.sqlite_busy_timeout_ms}"
-                    )
-                    await conn.execute("PRAGMA journal_mode=WAL")
-                    await conn.execute("PRAGMA synchronous=NORMAL")
-                    await conn.execute("PRAGMA foreign_keys=ON")
-                    await self._init_db(conn)
-                    self._secure_file_permissions()
-                    await self._enforce_capacity_locked(conn)
-                except BaseException:
-                    await conn.close()
-                    raise
-                self._conn = conn
+            self._prepare_database_file()
+            conn = await aiosqlite.connect(
+                self.path, timeout=self.settings.sqlite_busy_timeout_ms / 1000
+            )
+            try:
+                conn.row_factory = aiosqlite.Row
+                await conn.execute("PRAGMA journal_mode=WAL")
+                await conn.execute("PRAGMA synchronous=NORMAL")
+                await conn.execute("PRAGMA foreign_keys=ON")
+                await self._init_db(conn)
+                self._secure_file_permissions()
+                await self._enforce_capacity_locked(conn)
+            except BaseException:
+                await conn.close()
+                raise
+            self._conn = conn
 
     async def close(self) -> None:
-        async with self._connect_lock, self._write_lock:
+        async with self._lock:
             if self._conn is None:
                 return
-            await self._conn.close()
-            self._conn = None
+            try:
+                await self._conn.close()
+            finally:
+                self._conn = None
             self._secure_file_permissions()
 
-    async def _db(self) -> aiosqlite.Connection:
-        await self.connect()
-        assert self._conn is not None
-        return self._conn
+    @asynccontextmanager
+    async def read(self) -> AsyncIterator[aiosqlite.Connection]:
+        async with self._lock:
+            assert self._conn is not None, "Database is not connected"
+            yield self._conn
 
     @asynccontextmanager
-    async def _write(self) -> AsyncIterator[aiosqlite.Connection]:
-        db = await self._db()
-        async with self._write_lock:
+    async def write(self) -> AsyncIterator[aiosqlite.Connection]:
+        async with self.read() as db:
             await self._enforce_capacity_locked(db)
             try:
+                await db.execute("BEGIN IMMEDIATE")
                 yield db
                 await db.commit()
             except BaseException:
@@ -202,4 +232,4 @@ class AsyncSQLiteStore:
                     ) from exc
 
     async def _init_db(self, db: aiosqlite.Connection) -> None:
-        raise NotImplementedError
+        await db.executescript(_SCHEMA)

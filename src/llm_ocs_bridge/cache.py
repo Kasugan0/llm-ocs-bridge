@@ -6,42 +6,25 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-import aiosqlite
-
 from .config import Settings
 from .models import OCSQuery, SearchResult, is_valid_search_result
-from .storage import AsyncSQLiteStore
+from .storage import Database
 from .utils import normalize_text
 
 
-class SearchCacheStore(AsyncSQLiteStore):
-    async def _init_db(self, db: aiosqlite.Connection) -> None:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS search_cache (
-                cache_key TEXT PRIMARY KEY,
-                query_title TEXT NOT NULL,
-                query_options TEXT NOT NULL,
-                query_type TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                quality_score REAL NOT NULL,
-                payload_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                search_cache_version TEXT NOT NULL
-            )
-            """
-        )
-        await db.commit()
+class SearchCacheStore:
+    def __init__(self, db: Database) -> None:
+        self.db = db
 
     async def get(self, cache_key: str) -> str | None:
-        db = await self._db()
-        cursor = await db.execute(
-            "SELECT payload_json FROM search_cache WHERE cache_key = ?",
-            (cache_key,),
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        return None if row is None else str(row["payload_json"])
+        async with self.db.read() as db:
+            cursor = await db.execute(
+                "SELECT payload_json FROM search_cache WHERE cache_key = ?",
+                (cache_key,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            return None if row is None else str(row["payload_json"])
 
     async def set(
         self,
@@ -52,7 +35,7 @@ class SearchCacheStore(AsyncSQLiteStore):
         payload_json: str,
         search_cache_version: str,
     ) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute(
                 """
                 INSERT INTO search_cache (
@@ -90,68 +73,53 @@ class SearchCacheStore(AsyncSQLiteStore):
             )
 
     async def clear(self) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute("DELETE FROM search_cache")
 
     async def delete(self, cache_key: str) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute(
                 "DELETE FROM search_cache WHERE cache_key = ?", (cache_key,)
             )
 
     async def recent(self, limit: int, title_limit: int) -> list[dict[str, object]]:
-        db = await self._db()
-        cursor = await db.execute(
-            """
-            SELECT query_title, query_type, provider, quality_score, created_at
-            FROM search_cache
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [
-            {
-                "title": str(row["query_title"])[:title_limit],
-                "question_type": str(row["query_type"]),
-                "provider": str(row["provider"]),
-                "quality_score": float(row["quality_score"]),
-                "created_at": int(row["created_at"]),
-            }
-            for row in rows
-        ]
-
-
-class AnswerCacheStore(AsyncSQLiteStore):
-    async def _init_db(self, db: aiosqlite.Connection) -> None:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS answer_cache (
-                cache_key TEXT PRIMARY KEY,
-                query_title TEXT NOT NULL,
-                query_options TEXT NOT NULL,
-                query_type TEXT NOT NULL,
-                model TEXT NOT NULL,
-                prompt_version TEXT NOT NULL,
-                mode TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+        async with self.db.read() as db:
+            cursor = await db.execute(
+                """
+                SELECT query_title, query_type, provider, quality_score, created_at
+                FROM search_cache
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
             )
-            """
-        )
-        await db.commit()
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [
+                {
+                    "title": str(row["query_title"])[:title_limit],
+                    "question_type": str(row["query_type"]),
+                    "provider": str(row["provider"]),
+                    "quality_score": float(row["quality_score"]),
+                    "created_at": int(row["created_at"]),
+                }
+                for row in rows
+            ]
+
+
+class AnswerCacheStore:
+    def __init__(self, db: Database) -> None:
+        self.db = db
 
     async def get(self, cache_key: str) -> str | None:
-        db = await self._db()
-        cursor = await db.execute(
-            "SELECT answer FROM answer_cache WHERE cache_key = ?",
-            (cache_key,),
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        return None if row is None else str(row["answer"])
+        async with self.db.read() as db:
+            cursor = await db.execute(
+                "SELECT answer FROM answer_cache WHERE cache_key = ?",
+                (cache_key,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            return None if row is None else str(row["answer"])
 
     async def set(
         self,
@@ -162,7 +130,7 @@ class AnswerCacheStore(AsyncSQLiteStore):
         mode: str,
         answer: str,
     ) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute(
                 """
                 INSERT INTO answer_cache (
@@ -200,11 +168,11 @@ class AnswerCacheStore(AsyncSQLiteStore):
             )
 
     async def clear(self) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute("DELETE FROM answer_cache")
 
     async def delete(self, cache_key: str) -> None:
-        async with self._write() as db:
+        async with self.db.write() as db:
             await db.execute(
                 "DELETE FROM answer_cache WHERE cache_key = ?", (cache_key,)
             )

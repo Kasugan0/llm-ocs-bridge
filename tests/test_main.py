@@ -11,6 +11,7 @@ from llm_ocs_bridge import main as main_module
 from llm_ocs_bridge.cache import AnswerCacheStore, SearchCacheStore, cache_key
 from llm_ocs_bridge.main import _clear_cache
 from llm_ocs_bridge.models import OCSQuery
+from llm_ocs_bridge.storage import Database
 
 
 def _settings(tmp_path, **overrides):
@@ -30,202 +31,152 @@ def _settings(tmp_path, **overrides):
     return replace(load_settings(environ=os.environ), **values)
 
 
-def _env_file(tmp_path, mode=0o600):
+def _env_file(tmp_path, mode=384):
     path = tmp_path / ".env"
     path.write_text("ACCESS_TOKEN=test-access-token\n", encoding="utf-8")
     path.chmod(mode)
     return path
 
 
-def test_clear_cache_all(settings, tmp_path):
-    async def run() -> None:
-        path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(replace(settings, cache_path=path))
-        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
-        query = OCSQuery(title="题目", options=("A.1",), question_type="single")
-        search_key = cache_key(
-            "search",
-            query.title,
-            list(query.options),
-            query.question_type,
-            5,
+@pytest.mark.asyncio
+async def test_clear_cache_all(settings, tmp_path):
+    path = str(tmp_path / "cache.sqlite3")
+    search_cache = SearchCacheStore(Database(replace(settings, cache_path=path)))
+    answer_cache = AnswerCacheStore(Database(replace(settings, cache_path=path)))
+    query = OCSQuery(title="题目", options=("A.1",), question_type="single")
+    search_key = cache_key(
+        "search", query.title, list(query.options), query.question_type, 5, "v2"
+    )
+    answer_key = cache_key(
+        "answer",
+        query.title,
+        list(query.options),
+        query.question_type,
+        "gpt-4o-mini",
+        "v1",
+        "v2",
+        "search",
+    )
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        await search_cache.set(
+            search_key,
+            query,
+            "exa",
+            0.8,
+            '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
             "v2",
         )
-        answer_key = cache_key(
-            "answer",
-            query.title,
-            list(query.options),
-            query.question_type,
-            "gpt-4o-mini",
-            "v1",
-            "v2",
-            "search",
-        )
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            await search_cache.set(
-                search_key,
-                query,
-                "exa",
-                0.8,
-                '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
-                "v2",
-            )
-            await answer_cache.set(
-                answer_key,
-                query,
-                "gpt-4o-mini",
-                "v1",
-                "search",
-                "A",
-            )
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-        await _clear_cache("all", replace(settings, cache_path=path))
-
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            assert await search_cache.get(search_key) is None
-            assert await answer_cache.get(answer_key) is None
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-    asyncio.run(run())
+        await answer_cache.set(answer_key, query, "gpt-4o-mini", "v1", "search", "A")
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
+    await _clear_cache("all", replace(settings, cache_path=path))
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        assert await search_cache.get(search_key) is None
+        assert await answer_cache.get(answer_key) is None
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
 
 
-def test_clear_cache_search_scope(settings, tmp_path):
-    async def run() -> None:
-        path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(replace(settings, cache_path=path))
-        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
-        query = OCSQuery(title="题目", options=("A.1",), question_type="single")
-        search_key = cache_key(
-            "search",
-            query.title,
-            list(query.options),
-            query.question_type,
-            5,
+@pytest.mark.asyncio
+async def test_clear_cache_search_scope(settings, tmp_path):
+    path = str(tmp_path / "cache.sqlite3")
+    search_cache = SearchCacheStore(Database(replace(settings, cache_path=path)))
+    answer_cache = AnswerCacheStore(Database(replace(settings, cache_path=path)))
+    query = OCSQuery(title="题目", options=("A.1",), question_type="single")
+    search_key = cache_key(
+        "search", query.title, list(query.options), query.question_type, 5, "v2"
+    )
+    answer_key = cache_key(
+        "answer",
+        query.title,
+        list(query.options),
+        query.question_type,
+        "gpt-4o-mini",
+        "v1",
+        "v2",
+        "search",
+    )
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        await search_cache.set(
+            search_key,
+            query,
+            "exa",
+            0.8,
+            '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
             "v2",
         )
-        answer_key = cache_key(
-            "answer",
-            query.title,
-            list(query.options),
-            query.question_type,
-            "gpt-4o-mini",
-            "v1",
-            "v2",
-            "search",
-        )
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            await search_cache.set(
-                search_key,
-                query,
-                "exa",
-                0.8,
-                '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
-                "v2",
-            )
-            await answer_cache.set(
-                answer_key,
-                query,
-                "gpt-4o-mini",
-                "v1",
-                "search",
-                "A",
-            )
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-        await _clear_cache("search", replace(settings, cache_path=path))
-
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            assert await search_cache.get(search_key) is None
-            assert await answer_cache.get(answer_key) == "A"
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-    asyncio.run(run())
+        await answer_cache.set(answer_key, query, "gpt-4o-mini", "v1", "search", "A")
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
+    await _clear_cache("search", replace(settings, cache_path=path))
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        assert await search_cache.get(search_key) is None
+        assert await answer_cache.get(answer_key) == "A"
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
 
 
-def test_clear_cache_answer_scope(settings, tmp_path):
-    async def run() -> None:
-        path = str(tmp_path / "cache.sqlite3")
-        search_cache = SearchCacheStore(replace(settings, cache_path=path))
-        answer_cache = AnswerCacheStore(replace(settings, cache_path=path))
-        query = OCSQuery(title="题目", options=("A.1",), question_type="single")
-        search_key = cache_key(
-            "search",
-            query.title,
-            list(query.options),
-            query.question_type,
-            5,
+@pytest.mark.asyncio
+async def test_clear_cache_answer_scope(settings, tmp_path):
+    path = str(tmp_path / "cache.sqlite3")
+    search_cache = SearchCacheStore(Database(replace(settings, cache_path=path)))
+    answer_cache = AnswerCacheStore(Database(replace(settings, cache_path=path)))
+    query = OCSQuery(title="题目", options=("A.1",), question_type="single")
+    search_key = cache_key(
+        "search", query.title, list(query.options), query.question_type, 5, "v2"
+    )
+    answer_key = cache_key(
+        "answer",
+        query.title,
+        list(query.options),
+        query.question_type,
+        "gpt-4o-mini",
+        "v1",
+        "v2",
+        "search",
+    )
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        await search_cache.set(
+            search_key,
+            query,
+            "exa",
+            0.8,
+            '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
             "v2",
         )
-        answer_key = cache_key(
-            "answer",
-            query.title,
-            list(query.options),
-            query.question_type,
-            "gpt-4o-mini",
-            "v1",
-            "v2",
-            "search",
-        )
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            await search_cache.set(
-                search_key,
-                query,
-                "exa",
-                0.8,
-                '[{"title":"Result","url":"http://example.com","snippet":"x","source":"exa","published_at":""}]',
-                "v2",
-            )
-            await answer_cache.set(
-                answer_key,
-                query,
-                "gpt-4o-mini",
-                "v1",
-                "search",
-                "A",
-            )
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-        await _clear_cache("answer", replace(settings, cache_path=path))
-
-        await search_cache.connect()
-        await answer_cache.connect()
-        try:
-            assert await search_cache.get(search_key) is not None
-            assert await answer_cache.get(answer_key) is None
-        finally:
-            await search_cache.close()
-            await answer_cache.close()
-
-    asyncio.run(run())
+        await answer_cache.set(answer_key, query, "gpt-4o-mini", "v1", "search", "A")
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
+    await _clear_cache("answer", replace(settings, cache_path=path))
+    await search_cache.db.connect()
+    await answer_cache.db.connect()
+    try:
+        assert await search_cache.get(search_key) is not None
+        assert await answer_cache.get(answer_key) is None
+    finally:
+        await search_cache.db.close()
+        await answer_cache.db.close()
 
 
 def test_help_works_with_invalid_environment(settings, monkeypatch, capsys):
     monkeypatch.setenv("PORT", "invalid")
-
     with pytest.raises(SystemExit) as exc_info:
         main_module.run(["--help"])
-
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
     assert output.startswith("用法:")
@@ -245,7 +196,6 @@ def test_help_works_with_invalid_environment(settings, monkeypatch, capsys):
 def test_subcommand_help_is_chinese(settings, argv, expected, capsys):
     with pytest.raises(SystemExit) as exc_info:
         main_module.run(argv)
-
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
     assert output.startswith("用法:")
@@ -256,9 +206,7 @@ def test_subcommand_help_is_chinese(settings, argv, expected, capsys):
 
 def test_check_fails_when_env_file_is_missing(settings, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-
     assert asyncio.run(main_module._check()) == 1
-
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "当前目录不存在 .env" in captured.err
@@ -268,11 +216,9 @@ def test_check_fails_when_env_file_is_missing(settings, tmp_path, monkeypatch, c
 def test_check_fails_when_env_permissions_are_insecure(
     settings, tmp_path, monkeypatch, capsys
 ):
-    _env_file(tmp_path, 0o644)
+    _env_file(tmp_path, 420)
     monkeypatch.chdir(tmp_path)
-
     assert asyncio.run(main_module._check()) == 1
-
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "权限必须为 0600" in captured.err
@@ -283,9 +229,7 @@ def test_check_reports_invalid_configuration(settings, tmp_path, monkeypatch, ca
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PORT", "invalid")
     sys.modules.pop("llm_ocs_bridge.config", None)
-
     assert asyncio.run(main_module._check()) == 1
-
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "PORT must be an integer" in captured.err
@@ -309,9 +253,7 @@ def test_check_outputs_importable_ocs_config(settings, tmp_path, monkeypatch, ca
     )
     monkeypatch.setattr(main_module, "_check_llm", check_llm)
     monkeypatch.setattr(main_module, "_check_exa", unexpected_exa)
-
     assert asyncio.run(main_module._check()) == 0
-
     captured = capsys.readouterr()
     assert llm_checked is True
     assert "[OK]" not in captured.out
@@ -350,9 +292,7 @@ def test_check_calls_exa_when_configured(settings, tmp_path, monkeypatch, capsys
     )
     monkeypatch.setattr(main_module, "_check_llm", check_llm)
     monkeypatch.setattr(main_module, "_check_exa", check_exa)
-
     assert asyncio.run(main_module._check()) == 0
-
     assert checked_key == "test-exa-key"
     assert "[OK] Exa Search" in capsys.readouterr().err
 
@@ -369,9 +309,7 @@ def test_check_redacts_provider_errors(settings, tmp_path, monkeypatch, capsys):
         main_module, "_load_settings", lambda *_args, **_kwargs: settings
     )
     monkeypatch.setattr(main_module, "_check_llm", check_llm)
-
     assert asyncio.run(main_module._check()) == 1
-
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "sk-secret-value" not in captured.err
@@ -388,7 +326,6 @@ def test_check_redacts_provider_errors(settings, tmp_path, monkeypatch, capsys):
 )
 def test_ocs_config_uses_connectable_host(settings, tmp_path, host, expected):
     config = main_module._ocs_config(_settings(tmp_path, host=host))
-
     assert config[0]["url"] == expected
 
 
@@ -408,7 +345,6 @@ def test_llm_check_closes_client_on_failure(settings, monkeypatch):
             closed = True
 
     monkeypatch.setattr(llm_module, "LLMAnswerer", FakeAnswerer)
-
     with pytest.raises(RuntimeError, match="failed"):
         asyncio.run(main_module._check_llm(settings))
     assert closed is True
@@ -430,7 +366,6 @@ def test_exa_check_closes_client_on_failure(settings, monkeypatch):
             closed = True
 
     monkeypatch.setattr(search_module, "ExaSearch", FakeSearch)
-
     with pytest.raises(RuntimeError, match="failed"):
         asyncio.run(
             main_module._check_exa(replace(settings, exa_api_key="test-exa-key"))

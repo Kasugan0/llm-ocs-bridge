@@ -75,6 +75,7 @@ async def test_service_recovers_search_before_using_fallback_cache(settings):
 
     runtime.answerer._call_model.side_effect = model
     try:
+        await runtime.db.connect()
         first = await service_module.answer(runtime, query)
         second = await service_module.answer(runtime, query)
         third = await service_module.answer(runtime, query)
@@ -97,17 +98,9 @@ async def test_runtime_closes_all_resources_when_one_close_fails(settings):
     runtime = service_module.build_runtime(settings)
     runtime.answerer = AsyncMock()
     runtime.answerer.aclose.side_effect = RuntimeError("close failed")
-    resources = [
-        runtime.search_client,
-        runtime.search_cache,
-        runtime.answer_cache,
-        runtime.metrics_store,
-    ]
     runtime.search_client.aclose = AsyncMock()
-    for store in resources[1:]:
-        store.close = AsyncMock()
+    runtime.db.close = AsyncMock()
     with pytest.raises(RuntimeError, match="close failed"):
         await runtime.aclose()
     runtime.search_client.aclose.assert_awaited_once()
-    for store in resources[1:]:
-        store.close.assert_awaited_once()
+    runtime.db.close.assert_awaited_once()

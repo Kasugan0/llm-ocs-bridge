@@ -32,17 +32,17 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 async def _clear_cache(scope: str, settings: StorageSettings) -> None:
     from .cache import AnswerCacheStore, SearchCacheStore
+    from .storage import Database
 
-    search_cache = SearchCacheStore(settings)
-    answer_cache = AnswerCacheStore(settings)
+    db = Database(settings)
     try:
+        await db.connect()
         if scope in {"search", "all"}:
-            await search_cache.clear()
+            await SearchCacheStore(db).clear()
         if scope in {"answer", "all"}:
-            await answer_cache.clear()
+            await AnswerCacheStore(db).clear()
     finally:
-        await search_cache.close()
-        await answer_cache.close()
+        await db.close()
 
 
 def _help_options(parser: argparse.ArgumentParser) -> argparse._ArgumentGroup:

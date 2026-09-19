@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     runtime = build_runtime(app.state.settings)
     app.state.runtime = runtime
     try:
+        await runtime.db.connect()
         yield
     finally:
         await runtime.aclose()

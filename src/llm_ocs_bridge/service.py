@@ -17,12 +17,14 @@ from .llm import InvalidAnswerError, LLMAnswerer, MissingKeyError, validate_answ
 from .metrics import MetricsStore
 from .models import OCSQuery, SearchResult
 from .search import ExaSearch
+from .storage import Database
 from .utils import sanitize_error
 
 
 @dataclass
 class Runtime:
     settings: Settings
+    db: Database
     search_client: ExaSearch
     search_cache: SearchCacheStore
     answer_cache: AnswerCacheStore
@@ -32,9 +34,7 @@ class Runtime:
 
     async def aclose(self) -> None:
         async with AsyncExitStack() as stack:
-            stack.push_async_callback(self.metrics_store.close)
-            stack.push_async_callback(self.answer_cache.close)
-            stack.push_async_callback(self.search_cache.close)
+            stack.push_async_callback(self.db.close)
             stack.push_async_callback(self.search_client.aclose)
             if self.answerer is not None:
                 stack.push_async_callback(self.answerer.aclose)
@@ -56,12 +56,14 @@ class Evidence:
 
 def build_runtime(settings: Settings) -> Runtime:
     validate_runtime_settings(settings)
+    db = Database(settings)
     return Runtime(
         settings=settings,
+        db=db,
         search_client=ExaSearch(settings),
-        search_cache=SearchCacheStore(settings),
-        answer_cache=AnswerCacheStore(settings),
-        metrics_store=MetricsStore(settings),
+        search_cache=SearchCacheStore(db),
+        answer_cache=AnswerCacheStore(db),
+        metrics_store=MetricsStore(db, settings),
         answerer=None,
     )
 
