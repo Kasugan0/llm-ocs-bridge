@@ -183,7 +183,7 @@ class Database:
                 continue
             cursor = await db.execute(
                 f"""
-                SELECT rowid, {timestamp_column} AS created_at
+                SELECT rowid AS row_id, {timestamp_column} AS created_at
                 FROM {table}
                 ORDER BY {timestamp_column}, rowid
                 LIMIT ?
@@ -191,7 +191,7 @@ class Database:
                 (self.settings.cache_prune_batch_size,),
             )
             rows.extend(
-                (int(row["created_at"]), table, int(row["rowid"]))
+                (int(row["created_at"]), table, int(row["row_id"]))
                 for row in await cursor.fetchall()
             )
             await cursor.close()

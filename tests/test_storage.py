@@ -6,6 +6,59 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("maintenance", ["write", "clear", "reconnect"])
+async def test_capacity_prunes_mixed_cache_and_error_rows(settings, maintenance):
+    from llm_ocs_bridge.cache import SearchCacheStore, encode_search_results
+    from llm_ocs_bridge.metrics import MetricsStore
+    from llm_ocs_bridge.models import OCSQuery, SearchResult
+    from llm_ocs_bridge.storage import Database
+
+    budget = 131072
+    settings = replace(settings, cache_prune_batch_size=2)
+    database = Database(settings)
+    await database.connect()
+    cache = SearchCacheStore(database)
+    metrics = MetricsStore(database, settings)
+    payload = encode_search_results(
+        [SearchResult("Water", "https://example.com", "Water is H2O. " * 400)]
+    )
+    try:
+        await metrics.incr("llm_calls", 42)
+        async with database.write() as connection:
+            await connection.execute(
+                "INSERT INTO error_log(timestamp, provider, error_type, error_msg) "
+                "VALUES (1, 'llm', 'TransientLLMError', 'synthetic HTTP 503')"
+            )
+        if maintenance == "write":
+            database.settings = replace(settings, max_cache_bytes=budget)
+        for index in range(32):
+            await cache.set(
+                str(index), OCSQuery(f"water {index}"), "exa", 1.0, payload, "v4"
+            )
+        database.settings = replace(settings, max_cache_bytes=budget)
+        if maintenance == "clear":
+            await cache.clear()
+        await database.close()
+        await database.connect()
+        assert database.database_size_bytes() <= budget
+        assert await cache.get("0") is None
+        assert await cache.get("31") == (None if maintenance == "clear" else payload)
+        assert (await metrics.get_counters())["llm_calls"] == 42
+        async with (
+            database.read() as connection,
+            connection.execute("SELECT count(*) FROM error_log") as cursor,
+        ):
+            assert (await cursor.fetchone())[0] == 0
+        await cache.clear()
+        await database.close()
+        await database.connect()
+        assert await cache.get("31") is None
+        assert (await metrics.get_counters())["llm_calls"] == 42
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_write_rolls_back(settings, tmp_path):
     from llm_ocs_bridge.metrics import MetricsStore
     from llm_ocs_bridge.storage import Database
