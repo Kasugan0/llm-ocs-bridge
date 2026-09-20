@@ -85,7 +85,7 @@ class SearchCacheStore:
                 """
                 SELECT query_title, query_type, provider, quality_score, created_at
                 FROM search_cache
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid ASC
                 LIMIT ?
                 """,
                 (limit,),

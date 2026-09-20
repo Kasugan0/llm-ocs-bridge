@@ -32,9 +32,10 @@ async def test_time_indexes_upgrade_existing_database(settings):
                 assert all("TEMP B-TREE" not in row[3] for row in plan)
             plan = await connection.execute_fetchall(
                 "EXPLAIN QUERY PLAN SELECT query_title FROM search_cache "
-                "ORDER BY created_at DESC LIMIT 10"
+                "ORDER BY created_at DESC, rowid ASC LIMIT 10"
             )
-            assert all("TEMP B-TREE" not in row[3] for row in plan)
+            assert any("search_cache_created_at" in row[3] for row in plan)
+            assert all(row[3] != "USE TEMP B-TREE FOR ORDER BY" for row in plan)
             rows = await connection.execute_fetchall("SELECT answer FROM answer_cache")
             assert [row[0] for row in rows] == ["A"]
     finally:

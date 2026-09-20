@@ -11,6 +11,51 @@ from llm_ocs_bridge.storage import Database
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, 1, 2, 10, 100])
+async def test_recent_search_preserves_ties_across_index_and_restart(
+    settings, monkeypatch, limit
+):
+    database = Database(settings)
+    await database.connect()
+    store = cache_module.SearchCacheStore(database)
+    records = []
+    try:
+        async with database.write() as connection:
+            await connection.execute("DROP INDEX search_cache_created_at")
+        for ordinal, timestamp in enumerate([10, 11, 10, 12, 11, 12] + [12] * 32):
+            monkeypatch.setattr(
+                cache_module.time, "time", lambda timestamp=timestamp: timestamp
+            )
+            title = f"question-{ordinal}"
+            await store.set(title, OCSQuery(title), "exa", 0.8, "[]", "v4")
+            records.append(
+                {
+                    "title": title,
+                    "question_type": "",
+                    "provider": "exa",
+                    "quality_score": 0.8,
+                    "created_at": timestamp,
+                }
+            )
+        await store.set("question-1", OCSQuery("question-1"), "exa", 0.8, "[]", "v4")
+        records[1]["created_at"] = timestamp
+        expected = sorted(
+            records, key=lambda record: record["created_at"], reverse=True
+        )
+        assert await store.recent(limit, 100) == expected[:limit]
+        async with database.write() as connection:
+            await connection.execute(
+                "CREATE INDEX search_cache_created_at ON search_cache(created_at)"
+            )
+        assert await store.recent(limit, 100) == expected[:limit]
+        await database.close()
+        await database.connect()
+        assert await store.recent(limit, 100) == expected[:limit]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("store_name", ["SearchCacheStore", "AnswerCacheStore"])
 async def test_cache_lookup_uses_one_worker_operation(
     settings, monkeypatch, store_name
