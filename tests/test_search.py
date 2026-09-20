@@ -11,6 +11,53 @@ from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.search import ExaSearch, question_terms
 
 
+def test_semantic_score_matches_tokenization_for_mixed_text():
+    import random
+
+    from llm_ocs_bridge.search import _extract_terms
+
+    randomizer = random.Random(20260920)
+    tokens = [
+        "光合作用",
+        "释放氧气",
+        "氧",
+        "是",
+        "中文",
+        "文",
+        "什么",
+        "Water",
+        "watermelon",
+        "H2O",
+        "1H2O",
+        "1.25",
+        "125",
+        "x2",
+        "x^2",
+        "abc123",
+        "123abc",
+        "İ",
+        "K",
+        "the",
+        "a",
+        "和",
+    ]
+    for _ in range(300):
+        text = randomizer.choice((" ", "", ".", "\n")).join(
+            randomizer.choices(tokens, k=40)
+        )
+        query = OCSQuery(" ".join(randomizer.choices(tokens, k=8)))
+        terms = question_terms(query)
+        expected = len(terms & _extract_terms(text)) / len(terms) if terms else 0.0
+        assert ExaSearch._semantic_score(terms, text) == expected
+
+
+def test_semantic_score_large_evidence_keeps_late_matches():
+    terms = question_terms(OCSQuery("氧气 H2O 1.25 氧 water"))
+    text = "完全无关的大段中文材料" * 10000 + "氧气 H2O 1.25 氧 water"
+    assert ExaSearch._semantic_score(terms, text) == 1.0
+    assert ExaSearch._semantic_score(terms, "氧气 H2OO 1.250 氧气 watermelon") == 0.2
+
+
 @pytest.mark.asyncio
 async def test_exa_search_maps_results_and_uses_full_query_semantics(
     settings,
@@ -185,6 +232,7 @@ def test_exa_rejects_results_without_semantic_overlap():
 @pytest.mark.asyncio
 async def test_exa_search_timeout_cancels_request(settings):
     from llm_ocs_bridge import search as search_module
+
     settings = replace(settings, exa_timeout_seconds=0.001)
     cancelled = asyncio.Event()
 

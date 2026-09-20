@@ -15,6 +15,32 @@ from llm_ocs_bridge.llm import (
 from llm_ocs_bridge.questions import normalize_query
 
 
+def test_format_context_matches_full_encoding_at_utf8_boundaries():
+    from llm_ocs_bridge.llm import format_search_context
+    from llm_ocs_bridge.models import SearchResult
+
+    results = [
+        SearchResult("中🙂文", "https://example.com", "氧气é🙂" * 10000),
+        SearchResult("", "", "后续答案"),
+        SearchResult("Final", "https://example.org", "late evidence"),
+    ]
+    full = "\n\n".join(
+        "\n".join(filter(None, (f"[{index}] {item.title}", item.url, item.snippet)))
+        for index, item in enumerate(results, 1)
+    ).encode("utf-8")
+    first_bytes = len(full.split(b"\n\n", 1)[0])
+    limits = [0, 1, 7, 8, 12, 131072, len(full) + 10]
+    limits.extend(range(first_bytes - 4, first_bytes + 6))
+    for limit in limits:
+        expected = full[:limit]
+        if first_bytes < limit <= first_bytes + 2:
+            expected = full[:first_bytes]
+        assert format_search_context(results, limit) == expected.decode(
+            "utf-8", errors="ignore"
+        )
+    assert format_search_context(results) == full.decode("utf-8")
+
+
 def test_parse_payload_markdown_fence():
     raw = '```json\n{"answer": "A"}\n```'
     parsed = LLMAnswerer._parse_payload(raw)

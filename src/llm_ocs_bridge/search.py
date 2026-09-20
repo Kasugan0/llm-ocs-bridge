@@ -125,7 +125,26 @@ class ExaSearch:
     def _semantic_score(terms: frozenset[str], text: str) -> float:
         if not terms:
             return 0.0
-        return len(terms & _extract_terms(text)) / len(terms)
+        text = text.lower()
+        pending = set(terms - _STOP_TERMS)
+        pairs = {
+            term
+            for term in pending
+            if len(term) == 2 and all("\u4e00" <= char <= "\u9fff" for char in term)
+        }
+        matched = sum(term in text for term in pairs)
+        pending.difference_update(pairs)
+        if pending:
+            for match in _TERM_RE.finditer(text):
+                token = match.group()
+                if token in pending and not (
+                    "\u4e00" <= token[0] <= "\u9fff" and len(token) > 1
+                ):
+                    pending.remove(token)
+                    matched += 1
+                if not pending:
+                    break
+        return matched / len(terms)
 
     @staticmethod
     def _source_score(url: str) -> float:

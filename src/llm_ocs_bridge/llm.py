@@ -240,8 +240,9 @@ def format_search_context(
         piece = "\n".join(
             filter(None, (f"[{index}] {item.title}", item.url, item.snippet))
         )
-        candidate = (prefix + piece).encode("utf-8")
-        remaining = len(candidate) if max_bytes is None else max_bytes - used_bytes
+        remaining = None if max_bytes is None else max_bytes - used_bytes
+        candidate = (prefix + piece)[:remaining].encode("utf-8")
+        remaining = len(candidate) if remaining is None else remaining
         if remaining <= len(prefix):
             break
         chunks.append(candidate[:remaining])
