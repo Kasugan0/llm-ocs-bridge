@@ -83,6 +83,7 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
             budget = await database._live_size_bytes(connection) - (128 << 10)
         database.settings = replace(settings, max_cache_bytes=budget)
         phases = defaultdict(float)
+        phase_counts = defaultdict(int)
         original_execute = connection._execute
 
         async def timed_execute(function, *args, **kwargs):
@@ -100,6 +101,7 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
                     "other",
                 )
                 phases[phase] += (time.perf_counter() - started) * 1000
+                phase_counts[phase] += 1
 
         connection._execute = timed_execute
         maintenance_started = asyncio.Event()
@@ -136,7 +138,9 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
         await writer
         maintenance_ms = (time.perf_counter() - started) * 1000
         first_phases = dict(phases)
+        first_phase_counts = dict(phase_counts)
         phases.clear()
+        phase_counts.clear()
         mixed_latencies = []
         mixed_started = time.perf_counter()
         for index in range(64):
@@ -181,6 +185,7 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
             "maintenance_ms": maintenance_ms,
             "blocked_read_ms": blocked_read_ms,
             "maintenance_phases_ms": first_phases,
+            "maintenance_phase_counts": first_phase_counts,
             "mixed": {
                 "writes": 64,
                 "total_ms": mixed_ms,
@@ -188,6 +193,7 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
                 "read_wait_p95_ms": sorted(mixed_latencies)[60],
                 "read_wait_p99_ms": sorted(mixed_latencies)[63],
                 "phases_ms": dict(phases),
+                "phase_counts": dict(phase_counts),
             },
             "event_loop_max_lag_ms": max(loop_lags, default=0),
             "remaining": remaining,

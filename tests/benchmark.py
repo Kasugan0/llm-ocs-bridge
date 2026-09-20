@@ -218,7 +218,9 @@ async def measure(
     }
 
 
-async def benchmark(port: int, rounds: int, requests: int) -> list[dict]:
+async def benchmark(
+    port: int, rounds: int, requests: int, only_case: str | None = None
+) -> list[dict]:
     cases = [
         (case, requests, concurrency)
         for case in ("cached", "fallback")
@@ -227,6 +229,8 @@ async def benchmark(port: int, rounds: int, requests: int) -> list[dict]:
     results = []
     for trial in range(rounds):
         for case, count, concurrency in cases:
+            if only_case is not None and case != only_case:
+                continue
             async with httpx.AsyncClient(
                 base_url=f"http://127.0.0.1:{port}",
                 headers={"X-Access-Token": _TOKEN},
@@ -243,6 +247,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--requests", type=int, default=600)
+    parser.add_argument("--case", choices=("cached", "fallback", "unique", "identical"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.rounds < 1 or args.requests < 1:
@@ -256,7 +261,9 @@ def main() -> None:
             if not connection.poll(30):
                 raise TimeoutError("Benchmark server did not become ready")
             port = connection.recv()
-            results = asyncio.run(benchmark(port, args.rounds, args.requests))
+            results = asyncio.run(
+                benchmark(port, args.rounds, args.requests, args.case)
+            )
         finally:
             connection.send("stop")
             process.join(10)
