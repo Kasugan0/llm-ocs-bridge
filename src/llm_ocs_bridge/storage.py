@@ -208,13 +208,8 @@ class Database:
         self,
         db: aiosqlite.Connection,
     ) -> list[tuple[int, str, int]]:
-        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        existing = {str(row["name"]) for row in await cursor.fetchall()}
-        await cursor.close()
         rows: list[tuple[int, str, int]] = []
         for table, timestamp_column in _PRUNABLE_TABLES.items():
-            if table not in existing:
-                continue
             cursor = await db.execute(
                 f"""
                 SELECT rowid AS row_id, {timestamp_column} AS created_at

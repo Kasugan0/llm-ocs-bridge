@@ -225,7 +225,6 @@ def test_check_reports_invalid_configuration(tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PORT", "invalid")
-    sys.modules.pop("llm_ocs_bridge.config", None)
     assert asyncio.run(main_module._check()) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
