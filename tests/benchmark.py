@@ -160,6 +160,7 @@ async def measure(
     gate = asyncio.Semaphore(concurrency)
     durations: list[float] = []
     successes = 0
+    errors: dict[str, int] = {}
     before = (await client.get("/stats")).json()["counters"]
     await client.get("/benchmark-observations")
 
@@ -174,17 +175,25 @@ async def measure(
             title = f"water repeated {trial}"
         async with gate:
             started = perf_counter()
-            response = await client.post(
-                "/search",
-                json={
-                    "title": title,
-                    "options": list(_QUERY.options),
-                    "type": "single",
-                },
-            )
-            response.raise_for_status()
-            durations.append((perf_counter() - started) * 1000)
-            successes += response.json().get("answer") == "A"
+            try:
+                response = await client.post(
+                    "/search",
+                    json={
+                        "title": title,
+                        "options": list(_QUERY.options),
+                        "type": "single",
+                    },
+                )
+                response.raise_for_status()
+                success = response.json().get("answer") == "A"
+                successes += success
+                if not success:
+                    errors["answer"] = errors.get("answer", 0) + 1
+            except httpx.HTTPError as exc:
+                name = type(exc).__name__
+                errors[name] = errors.get(name, 0) + 1
+            finally:
+                durations.append((perf_counter() - started) * 1000)
 
     started = perf_counter()
     await asyncio.gather(*(request(ordinal) for ordinal in range(count)))
@@ -199,7 +208,8 @@ async def measure(
         "concurrency": concurrency,
         "successes": successes,
         "seconds": elapsed,
-        "rps": count / elapsed,
+        "rps": successes / elapsed,
+        "errors": errors,
         "p50_ms": durations[int((count - 1) * 0.5)],
         "p95_ms": durations[int((count - 1) * 0.95)],
         "search_calls": after["search_requests"] - before["search_requests"],
@@ -209,24 +219,24 @@ async def measure(
 
 
 async def benchmark(port: int, rounds: int, requests: int) -> list[dict]:
-    async with httpx.AsyncClient(
-        base_url=f"http://127.0.0.1:{port}",
-        headers={"X-Access-Token": _TOKEN},
-        limits=httpx.Limits(max_connections=256, max_keepalive_connections=256),
-        timeout=120,
-        trust_env=False,
-    ) as client:
-        await measure(client, "cached", 20, 1, 0)
-        results = []
-        for trial in range(rounds):
-            for case in ("cached", "fallback"):
-                for concurrency in (1, 8, 32, 128):
-                    results.append(
-                        await measure(client, case, requests, concurrency, trial)
-                    )
-            for case in ("unique", "identical"):
-                results.append(await measure(client, case, 32, 32, trial))
-        return results
+    cases = [
+        (case, requests, concurrency)
+        for case in ("cached", "fallback")
+        for concurrency in (1, 8, 32, 128)
+    ] + [(case, 32, 32) for case in ("unique", "identical")]
+    results = []
+    for trial in range(rounds):
+        for case, count, concurrency in cases:
+            async with httpx.AsyncClient(
+                base_url=f"http://127.0.0.1:{port}",
+                headers={"X-Access-Token": _TOKEN},
+                limits=httpx.Limits(max_connections=256, max_keepalive_connections=256),
+                timeout=120,
+                trust_env=False,
+            ) as client:
+                await measure(client, "cached", 20, 1, 0)
+                results.append(await measure(client, case, count, concurrency, trial))
+    return results
 
 
 def main() -> None:
