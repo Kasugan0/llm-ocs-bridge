@@ -546,7 +546,7 @@ async def test_cached_answer_needs_six_worker_calls(settings, monkeypatch):
         monkeypatch.setattr(Path, "stat", stat)
         assert (await service_module.answer(runtime, query)).answer == "A"
         assert len(operations) == 6
-        assert len(stats) == 9
+        assert len(stats) == 6
         assert not runtime.answerer._call_model.called
 
 

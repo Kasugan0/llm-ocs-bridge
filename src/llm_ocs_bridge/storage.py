@@ -260,13 +260,14 @@ class Database:
 
     def _secure_file_permissions(self) -> None:
         for path in self._database_files():
-            if path.exists():
-                try:
-                    os.chmod(path, 0o600)
-                except OSError as exc:
-                    raise RuntimeError(
-                        f"Cannot secure SQLite file permissions: {path}"
-                    ) from exc
+            try:
+                os.chmod(path, 0o600)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Cannot secure SQLite file permissions: {path}"
+                ) from exc
 
     async def _init_db(self, db: aiosqlite.Connection) -> None:
         await db.executescript(_SCHEMA)

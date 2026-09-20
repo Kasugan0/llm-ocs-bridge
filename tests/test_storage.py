@@ -1,9 +1,48 @@
 import asyncio
+import os
 from dataclasses import replace
+from pathlib import Path
 from threading import Event
 
 import aiosqlite
 import pytest
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_permission_update_tolerates_removed_sidecar(settings, monkeypatch, suffix):
+    from llm_ocs_bridge.storage import Database
+
+    paths = [Path(settings.cache_path + ending) for ending in ("", "-wal", "-shm")]
+    for path in paths:
+        path.write_bytes(b"synthetic-file")
+        path.chmod(0o644)
+    target = Path(settings.cache_path + suffix)
+    original = os.chmod
+
+    def concurrent_removal(path, mode):
+        if path == target:
+            target.unlink()
+        original(path, mode)
+
+    monkeypatch.setattr(os, "chmod", concurrent_removal)
+    Database(settings)._secure_file_permissions()
+    assert not target.exists()
+    for path in paths:
+        if path != target:
+            assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_permission_update_does_not_hide_access_failures(settings, monkeypatch):
+    from llm_ocs_bridge.storage import Database
+
+    Path(settings.cache_path).touch()
+
+    def denied(path, mode):
+        raise PermissionError("synthetic denied permission")
+
+    monkeypatch.setattr(os, "chmod", denied)
+    with pytest.raises(RuntimeError, match="Cannot secure SQLite file permissions"):
+        Database(settings)._secure_file_permissions()
 
 
 @pytest.mark.asyncio
