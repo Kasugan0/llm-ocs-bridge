@@ -16,7 +16,9 @@ from llm_ocs_bridge.config import StorageSettings
 from llm_ocs_bridge.storage import Database
 
 
-async def measure(directory: Path, indexed: bool, rows: int) -> dict:
+async def measure(
+    directory: Path, indexed: bool, rows: int, capacity_bytes: int | None
+) -> dict:
     settings = StorageSettings(str(directory / "bench.db"), 512 << 20, 100, 5000)
     database = Database(settings)
     await database.connect()
@@ -80,7 +82,11 @@ async def measure(directory: Path, indexed: bool, rows: int) -> dict:
             writes.append((time.perf_counter() - started) * 1000)
         async with database.read() as connection:
             await database._checkpoint(connection)
-            budget = await database._live_size_bytes(connection) - (128 << 10)
+            budget = (
+                await database._live_size_bytes(connection) - (128 << 10)
+                if capacity_bytes is None
+                else capacity_bytes
+            )
         database.settings = replace(settings, max_cache_bytes=budget)
         phases = defaultdict(float)
         phase_counts = defaultdict(int)
@@ -208,13 +214,16 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=50000)
     parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--capacity-bytes", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     results = []
     for round_number in range(args.rounds):
         for indexed in (False, True) if round_number % 2 == 0 else (True, False):
             with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
-                result = await measure(Path(directory), indexed, args.rows)
+                result = await measure(
+                    Path(directory), indexed, args.rows, args.capacity_bytes
+                )
             results.append({"round": round_number + 1, **result})
     args.output.write_text(
         json.dumps(
