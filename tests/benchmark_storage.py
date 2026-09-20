@@ -17,7 +17,11 @@ from llm_ocs_bridge.storage import Database
 
 
 async def measure(
-    directory: Path, indexed: bool, rows: int, capacity_bytes: int | None
+    directory: Path,
+    indexed: bool,
+    rows: int,
+    capacity_bytes: int | None,
+    tie_group_size: int,
 ) -> dict:
     settings = StorageSettings(str(directory / "bench.db"), 512 << 20, 100, 5000)
     database = Database(settings)
@@ -33,7 +37,10 @@ async def measure(
             await connection.executemany(
                 "INSERT INTO search_cache VALUES (?, 'q', '', '', 'exa', "
                 "1, ?, ?, 'v4')",
-                ((str(index), "x" * 1200, index) for index in range(rows // 2)),
+                (
+                    (str(index), "x" * 1200, index // tie_group_size)
+                    for index in range(rows // 2)
+                ),
             )
             await connection.executemany(
                 "INSERT INTO answer_cache VALUES (?, 'q', '', '', 'model', "
@@ -45,9 +52,14 @@ async def measure(
                 "VALUES (?, 'exa', 'synthetic', 'synthetic')",
                 ((index,) for index in range(100)),
             )
+        recent_columns = (
+            "SELECT query_title, query_type, provider, quality_score, created_at "
+            "FROM search_cache "
+        )
         queries = {
-            "recent": "SELECT query_title FROM search_cache "
-            "ORDER BY created_at DESC LIMIT 10",
+            "recent": recent_columns + "ORDER BY created_at DESC, rowid ASC LIMIT 10",
+            "recent_timestamp_only": recent_columns
+            + "ORDER BY created_at DESC LIMIT 10",
             "oldest_search": "SELECT rowid, created_at FROM search_cache "
             "ORDER BY created_at, rowid LIMIT 100",
             "oldest_answer": "SELECT rowid, created_at FROM answer_cache "
@@ -183,6 +195,7 @@ async def measure(
         return {
             "indexed": indexed,
             "rows": rows,
+            "tie_group_size": tie_group_size,
             "initial_bytes": size,
             "plans": plans,
             "query_median_ms": query_ms,
@@ -215,14 +228,21 @@ async def main():
     parser.add_argument("--rows", type=int, default=50000)
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--capacity-bytes", type=int)
+    parser.add_argument("--tie-group-size", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.tie_group_size < 1:
+        parser.error("tie-group-size must be positive")
     results = []
     for round_number in range(args.rounds):
         for indexed in (False, True) if round_number % 2 == 0 else (True, False):
             with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
                 result = await measure(
-                    Path(directory), indexed, args.rows, args.capacity_bytes
+                    Path(directory),
+                    indexed,
+                    args.rows,
+                    args.capacity_bytes,
+                    args.tie_group_size,
                 )
             results.append({"round": round_number + 1, **result})
     args.output.write_text(

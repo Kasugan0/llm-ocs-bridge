@@ -23,10 +23,13 @@ uv run --frozen python tests/benchmark.py --rounds 5 --requests 600 --output /tm
 ```bash
 uv run --frozen python tests/benchmark_storage.py --rounds 5 --rows 50000 --output /tmp/ocs-storage.json
 uv run --frozen python tests/benchmark_storage.py --rounds 5 --rows 50000 --capacity-bytes 69337088 --output /tmp/ocs-storage-fixed.json
+uv run --frozen python tests/benchmark_storage.py --rounds 5 --rows 50000 --tie-group-size 100 --capacity-bytes 69337088 --output /tmp/ocs-storage-ties.json
 uv run --frozen python tests/benchmark_evidence.py --rounds 5 --output /tmp/ocs-evidence.json
 ```
 
 存储基准交错创建相同行数的有索引/无索引临时库，比较查询计划、文件大小、写入、维护分段、64次近容量混合读写和保留行数；默认按各库活跃页减相同余量设预算，`--capacity-bytes`用于相同绝对容量比较。两种口径必须分开，索引空间导致少保留记录也必须报告。证据基准覆盖短/长证据及长题，记录评分、JSON/context哈希、字节数和同步处理造成的事件循环延迟。
+
+最近搜索固定按`created_at DESC, rowid ASC`排序：同秒记录沿用原行序，更新已有键不会将其移到同秒分组末尾。`--tie-group-size`控制每秒搜索记录数，默认为1；50000总行数下设为25000，可测全部搜索记录同秒的极端情况。基准中的`recent`使用当前完整列投影和稳定排序，`recent_timestamp_only`仅用于测量旧的不稳定排序成本，不是可用接口模式。现有时间索引提供时间顺序，同秒组内仍有局部排序；不能宣称完全无临时排序，或极端同秒组也有常数查询成本。
 
 新版真实上游验收必须显式授权付费，复用当前目录 `.env`，不修改它或真实数据库：
 
