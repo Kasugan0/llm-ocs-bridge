@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS answer_cache (
     answer TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS search_cache_created_at ON search_cache(created_at);
+CREATE INDEX IF NOT EXISTS answer_cache_created_at ON answer_cache(created_at);
 """
 
 
@@ -217,7 +219,7 @@ class Database:
     ) -> list[tuple[int, str, int]]:
         rows: list[tuple[int, str, int]] = []
         for table, timestamp_column in _PRUNABLE_TABLES.items():
-            cursor = await db.execute(
+            batch = await db.execute_fetchall(
                 f"""
                 SELECT rowid AS row_id, {timestamp_column} AS created_at
                 FROM {table}
@@ -228,9 +230,8 @@ class Database:
             )
             rows.extend(
                 (int(row["created_at"]), table, int(row["row_id"]))
-                for row in await cursor.fetchall()
+                for row in batch
             )
-            await cursor.close()
         return sorted(rows)[: self.settings.cache_prune_batch_size]
 
     @staticmethod

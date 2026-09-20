@@ -7,6 +7,107 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_time_indexes_upgrade_existing_database(settings):
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(settings)
+    await database.connect()
+    try:
+        async with database.write() as connection:
+            await connection.execute(
+                "INSERT INTO answer_cache VALUES "
+                "('old', 'q', '', 'single', 'model', 'v2', 'search', 'A', 1)"
+            )
+            await connection.execute("DROP INDEX IF EXISTS search_cache_created_at")
+            await connection.execute("DROP INDEX IF EXISTS answer_cache_created_at")
+        await database.close()
+        await database.connect()
+        async with database.read() as connection:
+            for table in ("search_cache", "answer_cache"):
+                plan = await connection.execute_fetchall(
+                    f"EXPLAIN QUERY PLAN SELECT rowid AS row_id, created_at "
+                    f"FROM {table} ORDER BY created_at, rowid LIMIT 100"
+                )
+                assert any(f"{table}_created_at" in row[3] for row in plan)
+                assert all("TEMP B-TREE" not in row[3] for row in plan)
+            plan = await connection.execute_fetchall(
+                "EXPLAIN QUERY PLAN SELECT query_title FROM search_cache "
+                "ORDER BY created_at DESC LIMIT 10"
+            )
+            assert all("TEMP B-TREE" not in row[3] for row in plan)
+            rows = await connection.execute_fetchall("SELECT answer FROM answer_cache")
+            assert [row[0] for row in rows] == ["A"]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_oldest_rows_preserve_global_timestamp_table_rowid_order(settings):
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(replace(settings, cache_prune_batch_size=5))
+    await database.connect()
+    try:
+        async with database.write() as connection:
+            for index, timestamp in enumerate((3, 1, 1)):
+                await connection.execute(
+                    "INSERT INTO search_cache VALUES (?, '', '', '', 'exa', "
+                    "1, '[]', ?, 'v4')",
+                    (str(index), timestamp),
+                )
+                await connection.execute(
+                    "INSERT INTO answer_cache VALUES (?, '', '', '', 'model', "
+                    "'v2', 'search', 'A', ?)",
+                    (str(index), timestamp),
+                )
+                await connection.execute(
+                    "INSERT INTO error_log(timestamp, provider, error_type) "
+                    "VALUES (?, 'exa', 'synthetic')",
+                    (timestamp,),
+                )
+        async with database.read() as connection:
+            assert await database._oldest_rows(connection) == [
+                (1, "answer_cache", 2),
+                (1, "answer_cache", 3),
+                (1, "error_log", 2),
+                (1, "error_log", 3),
+                (1, "search_cache", 2),
+            ]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_near_capacity_mixed_reads_and_writes_preserve_counters(settings):
+    from llm_ocs_bridge.cache import AnswerCacheStore
+    from llm_ocs_bridge.metrics import MetricsStore
+    from llm_ocs_bridge.models import OCSQuery
+    from llm_ocs_bridge.storage import Database
+
+    settings = replace(settings, max_cache_bytes=131072, cache_prune_batch_size=2)
+    database = Database(settings)
+    await database.connect()
+    cache = AnswerCacheStore(database)
+    metrics = MetricsStore(database, settings)
+    try:
+        await metrics.incr(llm_calls=42)
+        for index in range(40):
+            await cache.set(
+                str(index), OCSQuery(f"q{index}"), "model", "v2", "search", "x" * 6000
+            )
+            values = await asyncio.gather(
+                cache.get(str(index)), metrics.get_counters(), cache.get("missing")
+            )
+            assert values[0] == "x" * 6000
+            assert values[1]["llm_calls"] == 42
+            assert values[2] is None
+            assert database.database_size_bytes() <= settings.max_cache_bytes
+        assert await cache.get("0") is None
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_capacity_size_stats_each_file_once(settings, monkeypatch):
     from pathlib import Path
 
