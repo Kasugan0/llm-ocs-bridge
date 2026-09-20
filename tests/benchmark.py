@@ -25,6 +25,7 @@ from llm_ocs_bridge.llm import LLMAnswerer
 from llm_ocs_bridge.models import OCSQuery, SearchResult
 
 _QUERY = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+_FALLBACK_QUERY = OCSQuery("fallback water", _QUERY.options, "single")
 _TOKEN = "benchmark-token"
 
 
@@ -42,12 +43,15 @@ async def serve_async(connection: Connection, directory: str) -> None:
         MAX_CACHE_BYTES=str(1024**3),
         MAX_ACTIVE_ANSWERS="128",
         MAX_ANSWER_WAITERS="256",
+        LLM_FALLBACK_ENABLED="true",
     )
     settings = load_settings(environ=values)
     app = create_app(settings)
     original_lifespan = app.router.lifespan_context
 
     async def search(query: OCSQuery, limit: int | None):
+        if query == _FALLBACK_QUERY:
+            return [], 0
         await asyncio.sleep(0.1)
         return [SearchResult(query.title, "https://example.com", "water H2O", "exa")], 1
 
@@ -73,7 +77,61 @@ async def serve_async(connection: Connection, directory: str) -> None:
                 "search",
                 "A",
             )
-            yield
+            await runtime.answer_cache.set(
+                answer_key(_FALLBACK_QUERY, "fallback", settings),
+                _FALLBACK_QUERY,
+                settings.openai_model,
+                settings.prompt_version,
+                "fallback",
+                "A",
+            )
+            original_read = runtime.db.read
+            async with original_read() as database:
+                original_execute = database._execute
+
+            @asynccontextmanager
+            async def read():
+                started = perf_counter()
+                async with original_read() as database:
+                    waits.append((perf_counter() - started) * 1000)
+                    yield database
+
+            async def execute(function, *args, **kwargs):
+                operations["worker"] += 1
+                operations["commits"] += function.__name__ == "commit"
+                return await original_execute(function, *args, **kwargs)
+
+            runtime.db.read = read
+            database._execute = execute
+            monitor = asyncio.create_task(heartbeat())
+            try:
+                yield
+            finally:
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
+
+    waits, lags = [], []
+    operations = {"worker": 0, "commits": 0}
+
+    async def heartbeat():
+        while True:
+            started = perf_counter()
+            await asyncio.sleep(0.005)
+            lags.append(max(0, (perf_counter() - started - 0.005) * 1000))
+
+    @app.get("/benchmark-observations")
+    async def observations():
+        waits.sort()
+        snapshot = {
+            **operations,
+            "lock_wait_p95_ms": waits[int((len(waits) - 1) * 0.95)] if waits else 0,
+            "lock_wait_p99_ms": waits[int((len(waits) - 1) * 0.99)] if waits else 0,
+            "loop_lag_max_ms": max(lags, default=0),
+        }
+        waits.clear()
+        lags.clear()
+        operations.update(worker=0, commits=0)
+        return snapshot
 
     app.router.lifespan_context = lifespan
     with socket.socket() as listener:
@@ -103,11 +161,14 @@ async def measure(
     durations: list[float] = []
     successes = 0
     before = (await client.get("/stats")).json()["counters"]
+    await client.get("/benchmark-observations")
 
     async def request(ordinal: int) -> None:
         nonlocal successes
         title = _QUERY.title
-        if case == "unique":
+        if case == "fallback":
+            title = _FALLBACK_QUERY.title
+        elif case == "unique":
             title = f"water {trial} {ordinal}"
         elif case == "identical":
             title = f"water repeated {trial}"
@@ -128,6 +189,7 @@ async def measure(
     started = perf_counter()
     await asyncio.gather(*(request(ordinal) for ordinal in range(count)))
     elapsed = perf_counter() - started
+    observations = (await client.get("/benchmark-observations")).json()
     after = (await client.get("/stats")).json()["counters"]
     durations.sort()
     return {
@@ -142,6 +204,7 @@ async def measure(
         "p95_ms": durations[int((count - 1) * 0.95)],
         "search_calls": after["search_requests"] - before["search_requests"],
         "llm_calls": after["llm_calls"] - before["llm_calls"],
+        "observations": observations,
     }
 
 
@@ -156,10 +219,11 @@ async def benchmark(port: int, rounds: int, requests: int) -> list[dict]:
         await measure(client, "cached", 20, 1, 0)
         results = []
         for trial in range(rounds):
-            for concurrency in (1, 8, 32, 128):
-                results.append(
-                    await measure(client, "cached", requests, concurrency, trial)
-                )
+            for case in ("cached", "fallback"):
+                for concurrency in (1, 8, 32, 128):
+                    results.append(
+                        await measure(client, case, requests, concurrency, trial)
+                    )
             for case in ("unique", "identical"):
                 results.append(await measure(client, case, 32, 32, trial))
         return results
