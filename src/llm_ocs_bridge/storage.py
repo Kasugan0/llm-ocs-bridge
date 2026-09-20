@@ -120,14 +120,11 @@ class Database:
                 ) from exc
 
     @asynccontextmanager
-    async def _transaction(
-        self, db: aiosqlite.Connection
-    ) -> AsyncIterator[None]:
+    async def _transaction(self, db: aiosqlite.Connection) -> AsyncIterator[None]:
         cancelled = Event()
+        committed = False
 
-        def authorize(
-            action: int, operation: str | None, *_args: str | None
-        ) -> int:
+        def authorize(action: int, operation: str | None, *_args: str | None) -> int:
             if (
                 action == sqlite3.SQLITE_TRANSACTION
                 and operation == "COMMIT"
@@ -141,12 +138,20 @@ class Database:
             await db.execute("BEGIN IMMEDIATE")
             yield
             await db.commit()
+            committed = True
         except BaseException:
             cancelled.set()
             await self._rollback(db)
             raise
         finally:
-            await db.set_authorizer(None)
+            try:
+                await db.set_authorizer(None)
+            except Exception as exc:
+                if committed:
+                    raise PostCommitError(
+                        "Write committed; SQLite authorizer cleanup failed"
+                    ) from exc
+                raise
 
     async def _rollback(self, db: aiosqlite.Connection) -> None:
         rollback = asyncio.create_task(db.rollback())

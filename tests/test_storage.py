@@ -109,9 +109,7 @@ async def test_cancelled_queued_commit_rolls_back(
     if phase == "prune":
         budget = await database._live_size_bytes(connection) + 24576
         for index in range(12):
-            await cache.set(
-                str(index), OCSQuery("water"), "exa", 1, "x" * 10000, "v4"
-            )
+            await cache.set(str(index), OCSQuery("water"), "exa", 1, "x" * 10000, "v4")
         database.settings = replace(settings, max_cache_bytes=budget)
 
     loop = asyncio.get_running_loop()
@@ -330,8 +328,9 @@ async def test_cancelled_initialization_closes_unpublished_connection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("maintenance", ["capacity", "authorizer"])
 async def test_post_commit_failure_does_not_claim_rollback(
-    settings, tmp_path, monkeypatch
+    settings, tmp_path, monkeypatch, maintenance
 ):
     from llm_ocs_bridge.metrics import MetricsStore
     from llm_ocs_bridge.storage import Database, PostCommitError
@@ -346,7 +345,17 @@ async def test_post_commit_failure_does_not_claim_rollback(
         if attempts == 2:
             raise RuntimeError("synthetic maintenance failure")
 
-    monkeypatch.setattr(store, "_enforce_capacity_locked", maintain)
+    set_authorizer = store._conn.set_authorizer
+
+    async def reset_authorizer(callback):
+        if callback is None:
+            raise RuntimeError("synthetic authorizer cleanup failure")
+        await set_authorizer(callback)
+
+    if maintenance == "capacity":
+        monkeypatch.setattr(store, "_enforce_capacity_locked", maintain)
+    else:
+        monkeypatch.setattr(store._conn, "set_authorizer", reset_authorizer)
     try:
         with pytest.raises(PostCommitError, match="Write committed"):
             await MetricsStore(store, settings).incr("llm_calls")
