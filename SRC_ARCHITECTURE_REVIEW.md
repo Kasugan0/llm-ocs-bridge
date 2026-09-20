@@ -5,9 +5,10 @@
 **本文件保留历史审阅证据，不把旧问题描述伪装成当前代码状态。**
 
 - **第 1–10 节：重构前历史基线**，对应 `3c9d2cf`。其中“当前”“尚未修复”“未改业务代码”“未调用真实上游”等措辞仅指该次审阅；旧行号、旧接口和复现脚本必须在该提交的独立检出目录使用，不能直接套到新代码。
-- **第 11–14 节：本轮重构后的验收记录**，代码快照为 `bdfdd9a`。当前源码共 **13 个文件、2310 行、123 个函数/方法、24 个类**；包含嵌套回调，不包含隐式生成的 dataclass 方法。
-- **代码、本地验证与真实上游 E2E 已完成。** 174 项自动测试、Ruff、编译检查通过。此前真实 LLM 返回 HTTP 503、`model_not_found`；2026-09-20 按用户要求以 curl 复验返回 HTTP 200、`OK`，随后真实 Exa＋LLM 与纯 LLM fallback 的作答/答案缓存闭环均通过。沿用原凭据、endpoint 和请求模型，没有用本地桩替代真实成功；历史失败证据保留在第 13.3 节。
-- 当前判断：**🟢 模块边界、数据所有权与已验证行为清晰，真实上游阻塞已解除。** 本报告不声称不存在未发现缺陷，也不声称已验证真实 OCS 浏览器交互。
+- **第 11–12 节：修复后的架构与全量函数清单**，代码快照为 `0b1fb39`。当前源码共 **13 个文件、2344 行、126 个函数/方法、24 个类**；包含嵌套回调，不包含隐式生成的 dataclass 方法。
+- **第 13–14 节：首次重构验收历史**，对应 `bdfdd9a` 及随后上游复验。原来的 174 项绿灯未覆盖错误日志参与淘汰、排队 COMMIT 取消以及回滚期间重复取消；不能据此认定所有存储缺陷已关闭。
+- **第 15 节：补充复核与修复**，记录新增缺陷、确定性回归、取消的准确边界及新一轮验证结果。本文保留此前真实 LLM 503 和后续成功的证据，不把旧成功冒充本次验证。
+- 当前判断：**🟢 本轮已复现缺陷已修复并重新验收**；183 项自动测试、静态检查、curl 与两种真实上游作答/缓存闭环通过，详见第 15 节。不声称不存在未发现缺陷，也不声称已验证真实 OCS 浏览器交互。
 
 ## 1. 审阅结论与边界
 
@@ -710,7 +711,7 @@ PY
 
 ## 11. 重构结果与架构裁决
 
-本节开始是重构后状态。验收代码提交为 `bdfdd9a`，记录日期为本机 Asia/Shanghai 的 2026-09-20。用户已授权调整依赖、真实上游测试及无签名原子提交，并明确要求复用现有凭据。
+本节与第 12 节更新到补充修复提交 `0b1fb39`，记录日期为 2026-09-20。首次重构及上游验收历史保留在第 13–14 节，不能替代第 15 节的新回归。用户已授权调整依赖、真实上游测试及无签名原子提交，并明确要求复用现有凭据。
 
 ### 11.1 实际落地，不是目录搬家
 
@@ -723,12 +724,12 @@ cache / metrics → storage → aiosqlite
 llm / search → questions / models / utils
 ```
 
-仅增加 `service.py` 和 `questions.py` 两个运行时模块，仍为扁平包。没有 ORM、DI 容器、provider 注册框架、嵌套 repository 层、全局连接注册表或迁移期兼容壳。没有新增依赖，没有改动 `pyproject.toml` 或 `uv.lock`，也没有迁移 OpenAI SDK。
+仅增加 `service.py` 和 `questions.py` 两个运行时模块，仍为扁平包。没有 ORM、DI 容器、provider 注册框架、嵌套 repository 层、全局连接注册表或迁移期兼容壳。没有新增依赖或迁移 OpenAI SDK；为使用公开的 `set_authorizer`，将 aiosqlite 最低版本从 0.20.0 提高到 0.22.0，锁文件仍使用原来的 0.22.1，没有升级其他包。
 
 - `app.py` 从 482 行减到 174 行，只负责协议边界、生命周期和状态汇总；SQL 全部归 store。
 - `utils.py` 从 296 行减到 39 行，只保留通用文本归一化、脱敏和 UTF-8 截断。
 - `service.py` 的 224 行负责实际业务顺序，传递 `OCSQuery`、`Evidence`、`AnswerResult`；不依赖 FastAPI。
-- `storage.py` 增至 235 行是为补齐真实事务/容量/生命周期语义，不是抽象扩张。三个 store 不再继承连接 owner。
+- `storage.py` 为 269 行，业务写入和容量淘汰共享取消安全的 `_transaction`；没有新增存储框架，三个 store 仍组合使用同一个 owner。
 - `llm.py` 的 349 行包含原来分散在 utils 的答案 codec 和证据渲染；属于同一生成协议，不值得再拆成若干小包。
 - `search.py` 的 229 行包含固定词面规则和停用词。它不是语义模型；保留 `_semantic_score` 这个历史私有名字，但明确其实现只是词面覆盖率，避免把改名当作功能升级。
 - 总行数从 2204 到 2310，不以“少了多少行”代替架构判断：关键收益是边界明确、重复逻辑减少、缺陷有回归和数据只有一个 owner。
@@ -739,7 +740,7 @@ llm / search → questions / models / utils
 
 | 发现 | 当前状态与实现 | 直接回归证据 |
 | --- | --- | --- |
-| F01 取消事务残留 | 已修复；`Database.write` 在事务异常/取消退出时 rollback 后传播异常。 | `test_cancelled_write_rolls_back` |
+| F01 取消事务残留 | 事务体取消回滚；补充修复拒绝已取消但尚未授权的排队 COMMIT，重复取消时持锁等待回滚。已执行提交不可撤销。 | `test_cancelled_write_rolls_back`、`test_cancelled_queued_commit_rolls_back`、`test_cancellation_after_commit_preserves_committed_write` |
 | F02 WAL 导致误淘汰 | 已修复；checkpoint 后复测，按活跃页估算批量淘汰后集中 VACUUM。 | `test_capacity_reclaims_wal_before_evicting`、`test_capacity_vacuums_once_for_multiple_prune_batches` |
 | F03 DEBUG 无法启动 | 已修复；Uvicorn 使用 import-string factory。 | `test_debug_server_starts_in_subprocess` |
 | F04 配置路径不一致 | 已修复；入口统一读取 CWD 的 `.env`，环境变量优先，导入不加载。 | `test_load_uses_cwd_and_environment_priority`、`test_settings_import_does_not_read_environment` |
@@ -767,7 +768,7 @@ llm / search → questions / models / utils
 
 ## 12. 重构后逐函数职责清单
 
-以下覆盖 `bdfdd9a` 全部 **123/123** 个函数/方法，包括一个嵌套回调。每个模块标题给出当前路径，表中行号为 **`def` / `async def` 定义行**，不是装饰器起始行；不同于第 5 节的历史源码快照。每行说明保留职责及本轮裁决，不重复贴源代码。
+以下覆盖 `0b1fb39` 全部 **126/126** 个函数/方法，包括两个嵌套回调。每个模块标题给出当前路径，表中行号为 **`def` / `async def` 定义行**，不是装饰器起始行；不同于第 5 节的历史源码快照。每行说明保留职责及本轮裁决，不重复贴源代码。
 
 ### 12.1 `src/llm_ocs_bridge/__init__.py`
 
@@ -784,7 +785,7 @@ llm / search → questions / models / utils
 | `_runtime` | 42 | 从 request state 取得有类型 Runtime；保留短小边界访问器。 |
 | `_auth_ok` | 46 | 验证 header token，编码后恒时比较；不读取 URL token。 |
 | `_ocs_response` | 54 | 唯一 OCS 成功/失败响应构造点与 provider header 映射。 |
-| `_read_body` | 64 | 请求大小限制及 JSON/form 输入解码；只做 HTTP 边界工作。 |
+| `_read_body` | 64 | 限制请求大小，读取 GET 参数或 POST JSON；不解析 form，只做 HTTP 边界工作。 |
 | `_providers` | 105 | 描述配置启用的 provider；不声称探测上游健康。 |
 | `health_root` | 111 | 根路径探活，保留轻量 HTTP 端点。 |
 | `health` | 116 | 返回进程健康信息，不调用上游。 |
@@ -801,7 +802,7 @@ llm / search → questions / models / utils
 | `build_runtime` | 57 | 校验运行设置并构造一个数据库与三个 store；不隐式连接。 |
 | `_get_answerer` | 71 | 首次生成时创建 LLM 客户端；删除无 await 的假异步。 |
 | `_cached_answer` | 77 | 查答案缓存、校验、删坏值、更新命中/未命中指标。 |
-| `_answer_with_llm` | 101 | 渲染证据并传完整 OCSQuery，处理生成路径的指标钩子。 |
+| `_answer_with_llm` | 101 | 传完整 OCSQuery 与证据列表，处理生成路径的指标钩子；证据渲染归 `LLMAnswerer.answer`。 |
 | `_answer_with_llm.record_attempt` | 110 | 每个真实上游尝试增加 `llm_calls`，不是每道题增加一次。 |
 | `_resolve_evidence` | 120 | 搜索缓存→Exa→缓存写入；返回类型化证据/失败原因。 |
 | `_generate_answer` | 175 | 把生成异常映射为业务结果，成功后写答案缓存；不吞缓存写失败。 |
@@ -878,7 +879,7 @@ llm / search → questions / models / utils
 | `AnswerCacheStore.delete` | 173 | 精确移除不合法答案记录。 |
 | `encode_search_results` | 180 | 将共享 SearchResult 转为持久化格式，不保存 SDK 对象。 |
 | `decode_search_results` | 194 | 校验文件边界的 JSON 记录并过滤坏条目；坏数据不流入 prompt。 |
-| `serialize_options` | 227 | 保留选项结构，避免手工拼接碰撞。 |
+| `serialize_options` | 227 | 以 `#` 拼接选项，仅作存储元数据；缓存隔离使用 `question_cache_parts` 中的结构化数组。 |
 | `question_cache_parts` | 231 | 一处定义完整问题的 key 输入。 |
 | `cache_key` | 235 | 规范 JSON 后 SHA-256，稳定且避免分隔符碰撞。 |
 | `_canonicalize` | 241 | 对受控 key 输入归一化；返回 object，移除不必要 Any。 |
@@ -887,25 +888,28 @@ llm / search → questions / models / utils
 
 ### 12.8 `src/llm_ocs_bridge/storage.py`
 
-235 行、15 函数、2 类（Database、PostCommitError）；schema 仍是原四张表。锁属于数据库 owner，不属于文件路径全局注册表。
+269 行、18 函数、2 类（Database、PostCommitError）；schema 仍是原四张表。锁属于数据库 owner，不属于文件路径全局注册表。
 
 | 函数 | 行 | 当前职责与裁决 |
 | --- | --- | --- |
-| `Database.__init__` | 63 | 保存 StorageSettings、未连接状态与实例锁。 |
-| `Database.connect` | 69 | 锁内建立连接、PRAGMA、完整 schema，成功后公开 ready 状态；失败关闭。 |
-| `Database.close` | 90 | 同锁关闭单连接并清空状态，不由 store 各自关闭。 |
-| `Database.read` | 101 | 未连接 fail-fast；持锁读取，不能看到另一任务未提交的数据。 |
-| `Database.write` | 107 | 容量预检、BEGIN IMMEDIATE、完整事务锁、异常/取消 rollback、提交后维护错误分类。 |
-| `Database.database_size_bytes` | 125 | 主库/WAL/SHM 实际大小总计。 |
-| `Database._enforce_capacity_locked` | 130 | 先回收 WAL，再批次淘汰，最后集中 VACUUM；指标计数不淘汰。 |
-| `Database._checkpoint` | 158 | 执行 WAL checkpoint；不添加隐藏重试。 |
-| `Database._live_size_bytes` | 164 | 根据 SQLite 页状态估算有效占用，避免每批删行都 VACUUM。 |
-| `Database._oldest_rows` | 173 | 在允许淘汰的表中选最旧写入记录；没有变成 LRU。 |
-| `Database._group_rows` | 201 | 按内部表白名单分组待删 rowid；不接受外部表名。 |
-| `Database._database_files` | 207 | 一处定义 SQLite 主库和附属文件路径。 |
-| `Database._prepare_database_file` | 211 | 文件系统边界准备目录/数据库文件，保持权限约束。 |
-| `Database._secure_file_permissions` | 224 | 已存在数据库相关文件收敛到 0600。 |
-| `Database._init_db` | 234 | 一次性创建全部所需表，幂等兼容已有数据库。 |
+| `Database.__init__` | 65 | 保存 StorageSettings、未连接状态与实例锁。 |
+| `Database.connect` | 71 | 锁内建立连接、PRAGMA、完整 schema，成功后公开 ready 状态；失败关闭。 |
+| `Database.close` | 92 | 同锁关闭单连接并清空状态，不由 store 各自关闭。 |
+| `Database.read` | 103 | 未连接 fail-fast；持锁读取，不能看到另一任务未提交的数据。 |
+| `Database.write` | 109 | 持锁执行容量预检、业务事务和提交后维护；普通维护失败归为 `PostCommitError`。 |
+| `Database._transaction` | 123 | 统一业务/淘汰事务的 BEGIN、commit、回滚和 authorizer 生命周期；区分提交后的清理错误。 |
+| `Database._transaction.authorize` | 127 | 仅在已处理取消后拒绝尚未授权的 COMMIT，允许 ROLLBACK；使用线程安全 Event，不访问 aiosqlite 私有队列。 |
+| `Database._rollback` | 156 | 等待受 shield 保护的回滚完成，重复取消不释放事务锁；清理后继续传播取消。 |
+| `Database.database_size_bytes` | 168 | 主库/WAL/SHM 实际大小总计。 |
+| `Database._enforce_capacity_locked` | 173 | 先回收 WAL，再用统一事务批次淘汰，最后集中 VACUUM；指标计数不淘汰。 |
+| `Database._checkpoint` | 197 | 执行 WAL checkpoint；不添加隐藏重试。 |
+| `Database._live_size_bytes` | 203 | 根据 SQLite 页状态估算有效占用，避免每批删行都 VACUUM。 |
+| `Database._oldest_rows` | 212 | 以 `rowid AS row_id` 统一普通表与 INTEGER PRIMARY KEY 表的列名，按写入时间选取；完整初始化后不再探测缺表。 |
+| `Database._group_rows` | 235 | 按内部表白名单分组待删 rowid；不接受外部表名。 |
+| `Database._database_files` | 241 | 一处定义 SQLite 主库和附属文件路径。 |
+| `Database._prepare_database_file` | 245 | 创建数据库文件并收敛权限，不创建父目录；父目录必须已存在。 |
+| `Database._secure_file_permissions` | 258 | 已存在数据库相关文件收敛到 0600。 |
+| `Database._init_db` | 268 | 一次性创建全部所需表，幂等兼容已有数据库。 |
 
 ### 12.9 `src/llm_ocs_bridge/metrics.py`
 
@@ -981,6 +985,8 @@ llm / search → questions / models / utils
 | `truncate_utf8` | 38 | 编码一次、切 bytes、忽略末尾不完整字符，替代反复编码二分搜索。 |
 
 ## 13. 重构验收记录
+
+本节是首次验收历史，不包含第 15 节的后续缺陷修复；这里的测试总数、代码提交和逐函数校验只对应当时快照。
 
 ### 13.1 自动回归与静态检查
 
@@ -1092,10 +1098,54 @@ curl 成功后的最终复跑：**174 passed，3.50 秒；Ruff、编译检查及
 
 1. **真实 HTTP E2E 已通过，范围不等于浏览器 UI。** 真实 Exa/LLM、fallback、OCS HTTP 响应、缓存及计数均有成功记录；没有操作浏览器中的真实 OCS 用户脚本。此前 503 保留为历史上游故障，不承诺未来服务可用性。
 2. **单机单实例是当前部署目标。** 多个不同 Database owner 同时对同一个全新 DELETE-journal 库切换 WAL，仍可能 SQLite locked。单 owner 并发初始化与初始化后的跨连接写有测试；未增加路径全局锁、文件锁或隐藏重试解决未要求的多实例首次启动。
-3. **提交不能被取消“撤销”。** 已完成 commit 后的取消仍传播，不能承诺调用方收到 CancelledError 就必然未写入。事务体取消回滚和普通提交后维护错误都有明确测试；没有宣称覆盖任意时点重复 cancel、进程 kill 或掉电。
+3. **提交不能被取消“撤销”。** 原验收只测试了事务体取消，没有覆盖尚未执行的排队 COMMIT 和回滚期间重复取消；这是真实验收缺口，不是“已完成提交不可撤销”能够解释掉的情况。第 15 节给出修复和两侧边界回归；进程 kill、掉电及任意时点组合故障不在该保证内。
 4. **相关性是启发式。** 中文单字题、同义词、改写、纯符号题仍可能被过滤；正反例覆盖已发现缺陷，不代表召回率或正确率评测。没有语料/指标依据前不增加 embedding/NLP 服务。
 5. **脱敏有识别范围。** 已修复已知格式并尽量减少上游错误内容，但正则不能保证过滤任意未知字符串中的密钥。`check` 主动输出含 token 的 OCS 导入配置仍是既定用户功能，运行时自行保管终端输出。
 6. **无性能夸大。** 单连接目的是生命周期与事务边界清楚，不声称提高并发吞吐；每次指标更新仍有事务/维护成本。未做压测，不宣布 QPS 改善，不无依据加索引。
 7. **类型与平台范围明确。** 有类型注解、测试、Ruff 和编译检查，没有独立类型检查通过记录；本轮运行平台为 Linux/Python 3.12，未声称 Windows/macOS 文件权限和服务行为已验收。
 
-【最终裁决】这轮重构解决了已复现的结构和正确性问题，保留简单扁平架构，没有用框架掩盖业务。代码交付、本地验证与真实上游 HTTP 闭环均可复核；此前外部阻塞已解除，无需为上游阶段性失败修改本地业务逻辑。
+【历史裁决的更正】首次重构建立了清晰边界，但 174 项绿灯不足以关闭全部存储正确性问题。后续发现的日志淘汰崩溃与取消竞态必须单独复现、修复和验证，最终状态以第 15 节为准。
+
+## 15. 补充缺陷修复与重新验收（2026-09-20）
+
+### 15.1 缺陷、函数与直接证据
+
+| 问题 | 根因与修复 | 回归证据 |
+| --- | --- | --- |
+| 错误日志参与淘汰后写入、清缓存、重启失败 | `Database._oldest_rows` 对 INTEGER PRIMARY KEY 表使用未起别名的 rowid，结果列名实际为 id；改用显式 `row_id`。 | `test_capacity_prunes_mixed_cache_and_error_rows`：三个入口在旧实现全部失败，修复后全部通过；32 条正常大小证据、非空错误日志和累计指标共同参与验证。 |
+| 排队 COMMIT 在任务取消后仍提交 | aiosqlite 取消等待并不会移除工作队列里的操作。`Database._transaction.authorize` 拒绝已取消、尚未授权的 COMMIT，业务与淘汰事务共用实现。 | `test_cancelled_queued_commit_rolls_back`：真实工作线程阻塞、COMMIT 入队后取消；write/prune 两条路径、单次/重复取消共四例，旧实现全部失败，修复后通过。 |
+| 重复取消提前释放锁 | 原 rollback 的 await 可被再次取消；`Database._rollback` 持锁等待回滚任务完成，再传播取消。 | 上述四例中的两个重复取消场景断言 worker 未释放时锁仍持有、writer 未结束；随后无残留事务、无误提交，可继续写入并重连。 |
+| 提交后的新增清理错误分类 | authorizer 清理是事务退出边界；已完成提交后清理失败也必须使用 `PostCommitError`。 | `test_post_commit_failure_does_not_claim_rollback` 现在覆盖容量维护及 authorizer 清理两个分支；后者先失败再修复。 |
+| 测试重载技巧与过期结构探测 | 删除 `test_check_reports_invalid_configuration` 的 `sys.modules.pop`；schema 必须完整初始化，淘汰不再查询 sqlite_master 并静默跳过缺表。 | 存储、CLI、配置加载针对性测试 41 项通过；没有增加兼容入口。 |
+
+`test_cancellation_after_commit_preserves_committed_write` 明确验证相反边界：SQLite 已提交、结果尚未返回调用方时发生取消，记录保持持久化且取消仍传播。**准确合同是：取消被事务协程处理后、SQLite 尚未授权 COMMIT 时保证拒绝提交并回滚；不保证撤销已经授权执行的 COMMIT，也不把“调用了 Task.cancel”视作跨线程同步屏障。** 回滚受 shield 保护，COMMIT 不受 shield 保护；不是用强制完成提交掩盖误提交。
+
+采用已有库的公开能力而非自行维护线程队列：Context7 与本地锁定源码核对了单连接工作队列和 `set_authorizer`；[aiosqlite 0.22.0 变更记录](https://aiosqlite.omnilib.dev/en/v0.22.0/changelog.html)确认此公开接口的最低版本，[SQLite authorizer 文档](https://sqlite.org/c3ref/set_authorizer.html)说明授权发生在语句准备阶段。因此仅提升依赖下限，不新增依赖、不迁移 SDK、不改缓存版本。
+
+### 15.2 本次实际验证与保护边界
+
+- 修复前新增混合淘汰三例、取消四例分别失败；没有通过改写预期把旧实现变绿。
+- 取消两侧边界共五例连续复跑 20 次通过。补齐清理失败分类后，存储与缓存针对性测试 32 项通过，Ruff 与改动文件格式检查通过。
+- 在 `0b1fb39` 运行用户指定的三条冻结环境命令：**183 passed，2.80 秒；Ruff 全通过；py_compile 通过**。相较 174 项净增 9 项，相较原 121 项净增 62 项。仍只有既有 Starlette TestClient/HTTPX 弃用警告，没有为消除警告增加依赖。
+- `git diff --check` 通过；AST 核对第 12 节 **13/13 文件、126/126 函数名称与定义行号**一致，包内相对导入图无循环。Serena 确认测试已无 `sys.modules.pop` 或 `importlib.reload`；搜索适配测试模拟 SDK 响应的 `SimpleNamespace` 不属于 Runtime 兼容壳，保留。
+- 所有自动回归使用合成凭据和临时数据库；真实 E2E 只读取既有凭据并使用独立临时库，不覆盖 `.env`、不清业务数据库、不推送远程。
+
+本次重新用 **curl** 调用既有 LLM endpoint，请求模型仍为 `deepseek-flash`：退出码 0、**HTTP 200、正文答案恰为 `OK`**，返回模型标识 `deepseek-v4.1-flash`。Authorization 和请求体经 `curl --config -` 的 stdin 传入，不在命令参数中暴露凭据；这只是本次实际响应标识，不据此推断上游模型版本策略。
+
+随后通过真实 Uvicorn loopback TCP 与真实上游，在两个独立临时库中验证 OCS HTTP 合同：
+
+| 场景 | 实时答案 / provider | LLM 调用数 | 再次请求 | 错误记录 |
+| --- | --- | --- | --- | --- |
+| 真实 Exa＋LLM，水的化学式 | `A` / `exa` | 1 | 相同答案，答案缓存命中 1 次，LLM 调用数不增加 | 0 |
+| 禁用 Exa、真实 LLM fallback，一加一 | `A` / `llm-fallback` | 1 | 相同答案，答案缓存命中 1 次，LLM 调用数不增加 | 0 |
+
+两场景均验证 health、未认证 stats/search、实时成功 code、provider header 及缓存命中不带 provider header。搜索场景 `search_requests=1/search_successes=1`；fallback 场景 `search_requests=0/llm_fallbacks=1`，其 `search_cache_misses=2/answer_cache_misses=3` 保留既有按查询路径计数口径，没有改成按题目去重。加上独立 curl 共执行 3 次真实 LLM 请求、1 次 Exa 搜索；没有发生重试。两个脚本都确认 `.env` 内容摘要前后一致，仅发送合成题目，没有验证浏览器中的 OCS 用户脚本。
+
+### 15.3 原子提交
+
+| 提交 | 逻辑改动 |
+| --- | --- |
+| `7e341ec` | 修复日志淘汰的 rowid 列别名，并补三入口回归。 |
+| `3a5d87e` | 拒绝已取消的排队 COMMIT，等待重复取消下的回滚，提升 aiosqlite 下限。 |
+| `a8ceab1` | 删除模块重载和过期 schema 探测。 |
+| `0b1fb39` | 区分提交后的 authorizer 清理错误，补充对应失败回归。 |

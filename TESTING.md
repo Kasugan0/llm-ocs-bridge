@@ -38,4 +38,4 @@ curl --silent --show-error --include http://127.0.0.1:18080/search \
 - 成功作答：HTTP 200、`code=1`、`answer` 为选项标签；首次实时作答带 `X-Search-Provider`，重复答案缓存命中不带该头。
 - 上游失败：检查认证后的 `/stats` 脱敏错误记录；`/search` 仍以 HTTP 200、`code=0` 表达业务失败，不能只看 HTTP 状态码宣布 E2E 成功。
 
-本次实际运行结果、真实上游阻塞原因和逐函数复核见 `SRC_ARCHITECTURE_REVIEW.md` 第 11–14 节；尚未验证浏览器内真实 OCS 用户脚本交互。
+本次实际运行结果和补充缺陷修复见 `SRC_ARCHITECTURE_REVIEW.md` 第 15 节；逐函数清单见第 12 节，历史上游阻塞与首次验收见第 13–14 节。尚未验证浏览器内真实 OCS 用户脚本交互。

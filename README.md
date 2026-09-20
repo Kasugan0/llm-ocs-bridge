@@ -49,7 +49,7 @@ Exa 是可选项。未设置 `EXA_API_KEY` 时，项目不会匿名调用 Exa，
 | `config.py` / `main.py` | 显式配置加载 / CLI 启动与检查 |
 | `models.py` / `utils.py` | 共享数据结构 / 通用文本处理 |
 
-每个 Runtime 只有一个 Database，三个 store 组合共享它。启动时完成 schema 初始化，读操作与完整写事务共用互斥锁，退出时统一关闭；事务体因取消或异常退出时执行回滚，已提交的数据不因后续取消而撤销。容量统计包括主库、WAL 和 SHM，先 checkpoint，再按写入时间淘汰，最后集中 VACUUM；不使用 TTL 或 LRU。若写入已提交但后续维护失败，抛出 `PostCommitError`，调用者不应当把它当成未写入而盲目重试。
+每个 Runtime 只有一个 Database，三个 store 组合共享它。启动时完成 schema 初始化，读操作与完整写事务共用互斥锁，退出时统一关闭。事务体异常退出时回滚；在 SQLite 授权 COMMIT 前处理到的取消会拒绝排队提交并回滚，回滚期间重复取消不会提前释放锁。SQLite 已授权执行的提交不能靠后来的取消撤销，因此 `CancelledError` 不等于“必然未写入”。容量统计包括主库、WAL 和 SHM，先 checkpoint，再按写入时间淘汰，最后集中 VACUUM；不使用 TTL 或 LRU。若写入已提交但后续维护或 authorizer 清理失败，抛出 `PostCommitError`，调用者不应当把它当成未写入而盲目重试。
 
 检索会拼接全部有效 highlights，再逐条剔除零相关证据；质量阈值设为零也不能绕过这一门槛。相关性是轻量词面启发式，不是 embedding 或答案正确性证明。内置证据算法修订号 `v4` 参与搜索和答案缓存键，已有 `.env` 使用旧 `SEARCH_CACHE_VERSION` 也不会复用旧算法的缓存；该环境变量仍可额外手动失效缓存。`PROMPT_VERSION` 只用于生成规则变化。
 
