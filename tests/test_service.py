@@ -1,10 +1,242 @@
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock, call
 
 import pytest
 
 from llm_ocs_bridge import service as service_module
+from llm_ocs_bridge.llm import LLMAnswerer
 from llm_ocs_bridge.models import OCSQuery, SearchResult
+
+
+@asynccontextmanager
+async def controlled_runtime(settings):
+    runtime = service_module.build_runtime(
+        replace(settings, exa_api_key="synthetic-key")
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    runtime.search_client.search = AsyncMock(
+        return_value=(
+            [SearchResult("water", "https://example.com", "water is H2O", "exa")],
+            0.9,
+        )
+    )
+    runtime.answerer = LLMAnswerer(runtime.settings)
+
+    async def model(messages, on_attempt):
+        await on_attempt()
+        entered.set()
+        await release.wait()
+        return '{"answer":"A"}'
+
+    runtime.answerer._call_model = AsyncMock(side_effect=model)
+    await runtime.db.connect()
+    try:
+        yield runtime, entered, release
+    finally:
+        release.set()
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_identical_cold_answers_share_one_upstream_workflow(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        all_read = asyncio.Event()
+        reads = 0
+        original_get = runtime.answer_cache.get
+
+        async def get(key):
+            nonlocal reads
+            value = await original_get(key)
+            reads += 1
+            if reads >= 32:
+                all_read.set()
+            return value
+
+        runtime.answer_cache.get = get
+        tasks = [
+            asyncio.create_task(service_module.answer(runtime, query))
+            for ordinal in range(32)
+        ]
+        try:
+            async with asyncio.timeout(3):
+                await all_read.wait()
+                await entered.wait()
+                release.set()
+                results = await asyncio.gather(*tasks)
+            assert all(result.answer == "A" for result in results)
+            assert runtime.search_client.search.await_count == 1
+            assert runtime.answerer._call_model.await_count == 1
+            counters = await runtime.metrics_store.get_counters()
+            assert counters["llm_calls"] == counters["search_requests"] == 1
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_waiter_does_not_cancel_shared_answer(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        first = asyncio.create_task(service_module.answer(runtime, query))
+        second = None
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                second = asyncio.create_task(service_module.answer(runtime, query))
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                release.set()
+                result = await second
+            assert result.answer == "A"
+            assert runtime.answerer._call_model.await_count == 1
+        finally:
+            release.set()
+            await asyncio.gather(
+                *(task for task in (first, second) if task is not None),
+                return_exceptions=True,
+            )
+
+
+@pytest.mark.asyncio
+async def test_answer_finishes_after_all_waiters_cancel(settings):
+    from llm_ocs_bridge.cache import answer_key
+
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        task = asyncio.create_task(service_module.answer(runtime, query))
+        try:
+            async with asyncio.timeout(1):
+                await entered.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                release.set()
+                key = answer_key(query, "search", runtime.settings)
+                while await runtime.answer_cache.get(key) is None:
+                    await asyncio.sleep(0)
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_cancels_owned_answers_before_database(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        task = asyncio.create_task(service_module.answer(runtime, query))
+        try:
+            async with asyncio.timeout(1):
+                await entered.wait()
+                await runtime.aclose()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(task), 0.1)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_distinct_options_and_types_run_concurrently(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        queries = (
+            OCSQuery("water", ("A.H2O", "B.CO2"), "single"),
+            OCSQuery("water", ("A.H2O", "B.O2"), "single"),
+            OCSQuery("water", ("A.H2O", "B.CO2"), "multiple"),
+        )
+        all_entered = asyncio.Event()
+
+        async def model(messages, on_attempt):
+            await on_attempt()
+            if runtime.answerer._call_model.await_count == len(queries):
+                all_entered.set()
+            await release.wait()
+            return '{"answer":"A"}'
+
+        runtime.answerer._call_model.side_effect = model
+        tasks = [
+            asyncio.create_task(service_module.answer(runtime, query))
+            for query in queries
+        ]
+        try:
+            async with asyncio.timeout(3):
+                await all_entered.wait()
+                release.set()
+                results = await asyncio.gather(*tasks)
+            assert all(result.answer == "A" for result in results)
+            assert runtime.search_client.search.await_count == len(queries)
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_shared_answer_does_not_leave_a_placeholder(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.search_client.search.side_effect = RuntimeError("search failed")
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        first = await service_module.answer(runtime, query)
+        second = await service_module.answer(runtime, query)
+        assert first.error == second.error
+        assert first.error
+        assert runtime.search_client.search.await_count == 2
+        assert not runtime._answers
+
+
+@pytest.mark.asyncio
+async def test_shared_answer_cancelled_before_start_is_removed(settings, monkeypatch):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        create_task = asyncio.create_task
+
+        def cancelled_task(coroutine):
+            task = create_task(coroutine)
+            task.cancel()
+            return task
+
+        monkeypatch.setattr(service_module.asyncio, "create_task", cancelled_task)
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        with pytest.raises(asyncio.CancelledError):
+            await service_module.answer(runtime, query)
+        assert not runtime._answers
+
+
+@pytest.mark.asyncio
+async def test_stale_cache_miss_does_not_repeat_finished_answer(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        stale_read = asyncio.Event()
+        resume = asyncio.Event()
+        original_get = runtime.answer_cache.get
+
+        async def get(key):
+            value = await original_get(key)
+            if asyncio.current_task() is delayed and not stale_read.is_set():
+                stale_read.set()
+                await resume.wait()
+            return value
+
+        runtime.answer_cache.get = get
+        delayed = asyncio.create_task(service_module.answer(runtime, query))
+        try:
+            async with asyncio.timeout(3):
+                await stale_read.wait()
+                release.set()
+                first = await service_module.answer(runtime, query)
+                resume.set()
+                second = await delayed
+            assert first.answer == second.answer == "A"
+            assert first.provider == "exa"
+            assert second.provider is None
+            assert runtime.answerer._call_model.await_count == 1
+        finally:
+            resume.set()
+            release.set()
+            await asyncio.gather(delayed, return_exceptions=True)
 
 
 @pytest.mark.asyncio

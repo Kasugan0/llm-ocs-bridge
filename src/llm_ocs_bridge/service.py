@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from time import time
@@ -31,13 +32,22 @@ class Runtime:
     metrics_store: MetricsStore
     answerer: LLMAnswerer | None = None
     start_time: float = field(default_factory=time)
+    _answers: dict[str, asyncio.Task[AnswerResult]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _closing: bool = field(default=False, init=False)
 
     async def aclose(self) -> None:
+        self._closing = True
         async with AsyncExitStack() as stack:
             stack.push_async_callback(self.db.close)
             stack.push_async_callback(self.search_client.aclose)
             if self.answerer is not None:
                 stack.push_async_callback(self.answerer.aclose)
+            tasks = tuple(self._answers.values())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +215,7 @@ async def _generate_answer(
     return AnswerResult(answer=answer, provider=provider_name)
 
 
-async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
+async def _answer_query(runtime: Runtime, query: OCSQuery) -> AnswerResult:
     cached = await _cached_answer(runtime, query, "search")
     if cached is not None:
         return AnswerResult(answer=cached)
@@ -222,3 +232,20 @@ async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
     if cached is not None:
         return AnswerResult(answer=cached)
     return await _generate_answer(runtime, query, [], "llm-fallback", "fallback", True)
+
+
+async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
+    if runtime._closing:
+        raise RuntimeError("Runtime is closing")
+    cached = await _cached_answer(runtime, query, "search")
+    if cached is not None:
+        return AnswerResult(answer=cached)
+    if runtime._closing:
+        raise RuntimeError("Runtime is closing")
+    key = answer_key(query, "search", runtime.settings)
+    task = runtime._answers.get(key)
+    if task is None:
+        task = asyncio.create_task(_answer_query(runtime, query))
+        runtime._answers[key] = task
+        task.add_done_callback(lambda finished: runtime._answers.pop(key))
+    return await asyncio.shield(task)

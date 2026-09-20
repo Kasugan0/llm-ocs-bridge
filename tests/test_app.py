@@ -85,7 +85,7 @@ def test_search_allows_llm_fallback_without_exa_key_when_enabled(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -303,7 +303,7 @@ def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -369,7 +369,7 @@ def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
         patch.object(
             client.app.state.runtime.search_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.search_cache,
@@ -379,7 +379,7 @@ def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -443,7 +443,7 @@ def test_search_sets_llm_fallback_header_without_evidence(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -585,7 +585,7 @@ def test_stats_reports_search_success_and_llm_call(monkeypatch):
     assert counters["search_cache_hits"] == 0
     assert counters["search_cache_misses"] == 1
     assert counters["answer_cache_hits"] == 0
-    assert counters["answer_cache_misses"] == 1
+    assert counters["answer_cache_misses"] == 2
     assert counters["llm_calls"] == 1
     assert counters["llm_fallbacks"] == 0
 
@@ -607,7 +607,7 @@ def test_stats_reports_fallback_call(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -711,7 +711,7 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
         patch.object(
             client.app.state.runtime.search_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.search_cache,
@@ -721,7 +721,7 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -784,7 +784,7 @@ def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(return_value="H"),
+            new=AsyncMock(side_effect=["H", None]),
         ),
         patch.object(
             client.app.state.runtime.answer_cache,
@@ -1005,7 +1005,7 @@ def test_search_logs_error_on_llm_missing_key(monkeypatch):
         patch.object(
             client.app.state.runtime.answer_cache,
             "get",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(return_value=None),
         ),
         patch(
             "llm_ocs_bridge.service._get_answerer",
