@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event
 
 import aiosqlite
 
@@ -107,13 +109,8 @@ class Database:
     async def write(self) -> AsyncIterator[aiosqlite.Connection]:
         async with self.read() as db:
             await self._enforce_capacity_locked(db)
-            try:
-                await db.execute("BEGIN IMMEDIATE")
+            async with self._transaction(db):
                 yield db
-                await db.commit()
-            except BaseException:
-                await db.rollback()
-                raise
             try:
                 self._secure_file_permissions()
                 await self._enforce_capacity_locked(db)
@@ -121,6 +118,47 @@ class Database:
                 raise PostCommitError(
                     "Write committed; SQLite maintenance failed"
                 ) from exc
+
+    @asynccontextmanager
+    async def _transaction(
+        self, db: aiosqlite.Connection
+    ) -> AsyncIterator[None]:
+        cancelled = Event()
+
+        def authorize(
+            action: int, operation: str | None, *_args: str | None
+        ) -> int:
+            if (
+                action == sqlite3.SQLITE_TRANSACTION
+                and operation == "COMMIT"
+                and cancelled.is_set()
+            ):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        try:
+            await db.set_authorizer(authorize)
+            await db.execute("BEGIN IMMEDIATE")
+            yield
+            await db.commit()
+        except BaseException:
+            cancelled.set()
+            await self._rollback(db)
+            raise
+        finally:
+            await db.set_authorizer(None)
+
+    async def _rollback(self, db: aiosqlite.Connection) -> None:
+        rollback = asyncio.create_task(db.rollback())
+        cancellation = None
+        while not rollback.done():
+            try:
+                await asyncio.shield(rollback)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        rollback.result()
+        if cancellation is not None:
+            raise cancellation
 
     def database_size_bytes(self) -> int:
         return sum(
@@ -137,17 +175,13 @@ class Database:
             rows = await self._oldest_rows(db)
             if not rows:
                 raise RuntimeError("SQLite database exceeds MAX_CACHE_BYTES")
-            try:
+            async with self._transaction(db):
                 for table, row_ids in self._group_rows(rows).items():
                     placeholders = ",".join("?" for _ in row_ids)
                     async with db.execute(
                         f"DELETE FROM {table} WHERE rowid IN ({placeholders})", row_ids
                     ):
                         pass
-                await db.commit()
-            except BaseException:
-                await db.rollback()
-                raise
         async with db.execute("VACUUM"):
             pass
         await self._checkpoint(db)

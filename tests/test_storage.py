@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from threading import Event
 
 import aiosqlite
 import pytest
@@ -87,6 +88,125 @@ async def test_cancelled_write_rolls_back(settings, tmp_path):
         assert "cancelled" not in await MetricsStore(store, settings).get_counters()
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_cancel", [False, True])
+@pytest.mark.parametrize("phase", ["write", "prune"])
+async def test_cancelled_queued_commit_rolls_back(
+    settings, monkeypatch, phase, repeat_cancel
+):
+    from llm_ocs_bridge.cache import SearchCacheStore
+    from llm_ocs_bridge.metrics import MetricsStore
+    from llm_ocs_bridge.models import OCSQuery
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(settings)
+    await database.connect()
+    connection = database._conn
+    metrics = MetricsStore(database, settings)
+    cache = SearchCacheStore(database)
+    if phase == "prune":
+        budget = await database._live_size_bytes(connection) + 24576
+        for index in range(12):
+            await cache.set(
+                str(index), OCSQuery("water"), "exa", 1, "x" * 10000, "v4"
+            )
+        database.settings = replace(settings, max_cache_bytes=budget)
+
+    loop = asyncio.get_running_loop()
+    worker_started = asyncio.Event()
+    commit_queued = asyncio.Event()
+    rollback_queued = asyncio.Event()
+    release_worker = Event()
+    blocked_queries = []
+    execute = connection._execute
+
+    def pause_worker():
+        loop.call_soon_threadsafe(worker_started.set)
+        assert release_worker.wait(5), "Test failed to release SQLite worker"
+
+    async def block_worker():
+        async with connection.execute("SELECT pause_worker()"):
+            pass
+
+    async def observe_queue(operation, *args, **kwargs):
+        if operation == connection._conn.commit and not commit_queued.is_set():
+            blocked_queries.append(asyncio.create_task(block_worker()))
+            await worker_started.wait()
+            commit_queued.set()
+        if operation == connection._conn.rollback:
+            rollback_queued.set()
+        return await execute(operation, *args, **kwargs)
+
+    await connection.create_function("pause_worker", 0, pause_worker)
+    monkeypatch.setattr(connection, "_execute", observe_queue)
+    writer = asyncio.create_task(metrics.incr("cancelled"))
+    try:
+        await asyncio.wait_for(commit_queued.wait(), 2)
+        writer.cancel()
+        await asyncio.wait_for(rollback_queued.wait(), 2)
+        if repeat_cancel:
+            writer.cancel()
+            await asyncio.sleep(0)
+            assert database._lock.locked()
+            assert not writer.done()
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await writer
+        assert not connection.in_transaction
+        assert "cancelled" not in await metrics.get_counters()
+        if phase == "prune":
+            assert await cache.get("0") == "x" * 10000
+        database.settings = settings
+        await metrics.incr("llm_calls")
+        await database.close()
+        await database.connect()
+        assert "cancelled" not in await metrics.get_counters()
+        assert (await metrics.get_counters())["llm_calls"] == 1
+    finally:
+        release_worker.set()
+        await asyncio.gather(writer, *blocked_queries, return_exceptions=True)
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_commit_preserves_committed_write(
+    settings, monkeypatch
+):
+    from llm_ocs_bridge.metrics import MetricsStore
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(settings)
+    await database.connect()
+    metrics = MetricsStore(database, settings)
+    connection = database._conn
+    commit_finished = asyncio.Event()
+    commit = connection.commit
+
+    async def completed_commit():
+        await commit()
+        commit_finished.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(connection, "commit", completed_commit)
+    writer = asyncio.create_task(metrics.incr("committed"))
+    try:
+        await asyncio.wait_for(commit_finished.wait(), 2)
+        writer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer
+        assert not connection.in_transaction
+        assert (await metrics.get_counters())["committed"] == 1
+        monkeypatch.setattr(connection, "commit", commit)
+        await metrics.incr("llm_calls")
+        await database.close()
+        await database.connect()
+        assert (await metrics.get_counters())["committed"] == 1
+    finally:
+        writer.cancel()
+        await asyncio.gather(writer, return_exceptions=True)
+        await database.close()
 
 
 @pytest.mark.asyncio
