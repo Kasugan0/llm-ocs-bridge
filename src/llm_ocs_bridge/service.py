@@ -36,6 +36,7 @@ class Runtime:
         default_factory=dict, init=False, repr=False
     )
     _closing: bool = field(default=False, init=False)
+    _waiters: int = field(default=0, init=False)
 
     async def aclose(self) -> None:
         self._closing = True
@@ -234,7 +235,25 @@ async def _answer_query(runtime: Runtime, query: OCSQuery) -> AnswerResult:
     return await _generate_answer(runtime, query, [], "llm-fallback", "fallback", True)
 
 
-async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
+async def _answer_deadline(
+    runtime: Runtime, query: OCSQuery, expires: float
+) -> AnswerResult:
+    deadline = asyncio.timeout_at(expires)
+    try:
+        async with deadline:
+            return await _answer_query(runtime, query)
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        await runtime.metrics_store.log_error(
+            "service", "AnswerTimeout", "Answer deadline exceeded"
+        )
+        return AnswerResult(error="答题超时")
+
+
+async def _answer_request(
+    runtime: Runtime, query: OCSQuery, expires: float
+) -> AnswerResult:
     if runtime._closing:
         raise RuntimeError("Runtime is closing")
     cached = await _cached_answer(runtime, query, "search")
@@ -244,8 +263,30 @@ async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
         raise RuntimeError("Runtime is closing")
     key = answer_key(query, "search", runtime.settings)
     task = runtime._answers.get(key)
+    if runtime._waiters >= runtime.settings.max_answer_waiters or (
+        task is None and len(runtime._answers) >= runtime.settings.max_active_answers
+    ):
+        return AnswerResult(error="服务繁忙，请稍后重试")
     if task is None:
-        task = asyncio.create_task(_answer_query(runtime, query))
+        task = asyncio.create_task(_answer_deadline(runtime, query, expires))
         runtime._answers[key] = task
         task.add_done_callback(lambda finished: runtime._answers.pop(key))
-    return await asyncio.shield(task)
+    runtime._waiters += 1
+    try:
+        return await asyncio.shield(task)
+    finally:
+        runtime._waiters -= 1
+
+
+async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
+    expires = (
+        asyncio.get_running_loop().time() + runtime.settings.answer_timeout_seconds
+    )
+    deadline = asyncio.timeout_at(expires)
+    try:
+        async with deadline:
+            return await _answer_request(runtime, query, expires)
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        return AnswerResult(error="答题超时")

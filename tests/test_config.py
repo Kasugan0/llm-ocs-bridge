@@ -94,3 +94,39 @@ def test_invalid_timeout_configuration_fails(monkeypatch, name, value):
         importlib.import_module("llm_ocs_bridge.config").load_settings(
             environ=os.environ
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MAX_ACTIVE_ANSWERS", "0"),
+        ("MAX_ANSWER_WAITERS", "-1"),
+        ("ANSWER_TIMEOUT_SECONDS", "0"),
+        ("ANSWER_TIMEOUT_SECONDS", "nan"),
+        ("ANSWER_TIMEOUT_SECONDS", "inf"),
+    ],
+)
+def test_invalid_answer_budget_fails_configuration(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match=name):
+        importlib.import_module("llm_ocs_bridge.config").load_settings(
+            environ=os.environ
+        )
+
+
+def test_answer_budget_defaults_and_explicit_overrides(monkeypatch):
+    from llm_ocs_bridge.config import load_settings
+
+    for name in ("MAX_ACTIVE_ANSWERS", "MAX_ANSWER_WAITERS", "ANSWER_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    defaults = load_settings(environ=os.environ)
+    assert defaults.max_active_answers == 8
+    assert defaults.max_answer_waiters == 64
+    assert defaults.answer_timeout_seconds == 120
+    monkeypatch.setenv("MAX_ACTIVE_ANSWERS", "4")
+    monkeypatch.setenv("MAX_ANSWER_WAITERS", "12")
+    monkeypatch.setenv("ANSWER_TIMEOUT_SECONDS", "45.5")
+    changed = load_settings(environ=os.environ)
+    assert changed.max_active_answers == 4
+    assert changed.max_answer_waiters == 12
+    assert changed.answer_timeout_seconds == 45.5

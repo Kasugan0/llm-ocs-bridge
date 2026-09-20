@@ -13,6 +13,27 @@ from llm_ocs_bridge.models import SearchResult
 AUTH_HEADERS = {"X-Access-Token": "test-access-token"}
 
 
+@pytest.mark.parametrize("message", ["服务繁忙，请稍后重试", "答题超时"])
+def test_answer_budget_failures_preserve_ocs_contract(message):
+    from llm_ocs_bridge.app import create_app
+    from llm_ocs_bridge.service import AnswerResult
+
+    app = create_app(load_settings(environ=os.environ))
+    with (
+        TestClient(app) as client,
+        patch(
+            "llm_ocs_bridge.app.answer",
+            new=AsyncMock(return_value=AnswerResult(error=message)),
+        ),
+    ):
+        response = client.post(
+            "/search", json={"title": "open", "type": ""}, headers=AUTH_HEADERS
+        )
+    assert response.status_code == 200
+    assert response.json() == {"code": 0, "msg": message}
+    assert "X-Search-Provider" not in response.headers
+
+
 def test_health_endpoint():
     from llm_ocs_bridge.app import create_app
 

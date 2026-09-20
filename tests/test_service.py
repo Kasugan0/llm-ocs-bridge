@@ -240,6 +240,189 @@ async def test_stale_cache_miss_does_not_repeat_finished_answer(settings):
 
 
 @pytest.mark.asyncio
+async def test_active_answer_limit_does_not_block_cached_answers(settings):
+    from llm_ocs_bridge.cache import answer_key
+
+    settings = replace(settings, max_active_answers=1)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        warm = replace(query, title="warm")
+        await runtime.answer_cache.set(
+            answer_key(warm, "search", runtime.settings),
+            warm,
+            settings.openai_model,
+            settings.prompt_version,
+            "search",
+            "A",
+        )
+        task = asyncio.create_task(service_module.answer(runtime, query))
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                hit = await service_module.answer(runtime, warm)
+                busy = await service_module.answer(runtime, replace(query, title="new"))
+                assert hit.answer == "A"
+                assert hit.provider is None
+                assert busy.error == "服务繁忙，请稍后重试"
+                assert len(runtime._answers) == 1
+                release.set()
+                await task
+                recovered = await service_module.answer(
+                    runtime, replace(query, title="new")
+                )
+                assert recovered.answer == "A"
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_shared_waiter_limit_recovers_after_cancellation(settings):
+    settings = replace(settings, max_answer_waiters=1)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        task = asyncio.create_task(service_module.answer(runtime, query))
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                busy = await service_module.answer(runtime, query)
+                assert busy.error == "服务繁忙，请稍后重试"
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert runtime._waiters == 0
+                assert len(runtime._answers) == 1
+                release.set()
+                result = await service_module.answer(runtime, query)
+                assert result.answer == "A"
+                assert runtime.answerer._call_model.await_count == 1
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_shared_answer_timeout_is_not_reset_by_late_waiters(settings):
+    settings = replace(settings, answer_timeout_seconds=0.1)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        first = asyncio.create_task(service_module.answer(runtime, query))
+        second = None
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                owned = tuple(runtime._answers.values())
+                await asyncio.sleep(0.02)
+                second = asyncio.create_task(service_module.answer(runtime, query))
+                results = await asyncio.gather(first, second)
+                await asyncio.gather(*owned)
+                assert all(result.error == "答题超时" for result in results)
+                assert not runtime._answers
+                assert runtime._waiters == 0
+                errors = await runtime.metrics_store.get_recent_errors()
+                assert len(errors) == 1
+                assert "AnswerTimeout" in errors[0]["error"]
+                release.set()
+                result = await service_module.answer(runtime, query)
+                assert result.answer == "A"
+        finally:
+            release.set()
+            await asyncio.gather(
+                *(task for task in (first, second) if task is not None),
+                return_exceptions=True,
+            )
+
+
+@pytest.mark.asyncio
+async def test_answer_deadline_includes_initial_cache_wait(settings):
+    settings = replace(settings, answer_timeout_seconds=0.02)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        async def wait_for_cache(key):
+            await release.wait()
+
+        runtime.answer_cache.get = AsyncMock(side_effect=wait_for_cache)
+        async with asyncio.timeout(1):
+            result = await service_module.answer(runtime, OCSQuery("open", (), ""))
+        assert result.error == "答题超时"
+        assert not runtime._answers
+        assert not runtime.search_client.search.called
+
+
+@pytest.mark.asyncio
+async def test_answer_deadline_includes_retry_backoff(settings):
+    from llm_ocs_bridge.llm import TransientLLMError
+
+    settings = replace(
+        settings, answer_timeout_seconds=0.1, llm_retry_backoff_seconds=1
+    )
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        async def model(messages, on_attempt):
+            await on_attempt()
+            entered.set()
+            raise TransientLLMError("synthetic transport failure")
+
+        runtime.answerer._call_model.side_effect = model
+        task = asyncio.create_task(
+            service_module.answer(runtime, OCSQuery("water", ("A.H2O",), "single"))
+        )
+        async with asyncio.timeout(3):
+            await entered.wait()
+            owned = tuple(runtime._answers.values())
+            result = await task
+            await asyncio.gather(*owned)
+        assert result.error == "答题超时"
+        assert runtime.answerer._call_model.await_count == 1
+        assert runtime._waiters == 0
+
+
+@pytest.mark.asyncio
+async def test_answer_deadline_cancels_slow_response_stream(settings):
+    import httpx
+
+    settings = replace(settings, answer_timeout_seconds=0.1)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        closed = asyncio.Event()
+
+        class SlowStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                entered.set()
+                while True:
+                    await asyncio.sleep(0.01)
+                    yield b" "
+
+            async def aclose(self):
+                closed.set()
+
+        runtime.answerer = LLMAnswerer(runtime.settings)
+        runtime.answerer._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, stream=SlowStream())
+            )
+        )
+        task = asyncio.create_task(
+            service_module.answer(runtime, OCSQuery("water", ("A.H2O",), "single"))
+        )
+        async with asyncio.timeout(3):
+            await entered.wait()
+            owned = tuple(runtime._answers.values())
+            result = await task
+            await asyncio.gather(*owned)
+        assert result.error == "答题超时"
+        assert closed.is_set()
+        assert not runtime._answers
+
+
+@pytest.mark.asyncio
+async def test_internal_timeout_is_not_misclassified_as_answer_budget(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.answer_cache.get = AsyncMock(
+            side_effect=TimeoutError("storage failure")
+        )
+        with pytest.raises(TimeoutError, match="storage failure"):
+            await service_module.answer(runtime, OCSQuery("open", (), ""))
+
+
+@pytest.mark.asyncio
 async def test_llm_calls_count_actual_http_attempts(settings):
     metrics = AsyncMock()
 

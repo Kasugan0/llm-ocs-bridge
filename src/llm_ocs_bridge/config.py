@@ -128,6 +128,9 @@ class Settings(StorageSettings):
     search_cache_version: str
     llm_fallback_enabled: bool
     min_search_quality_score: float
+    max_active_answers: int
+    max_answer_waiters: int
+    answer_timeout_seconds: float
 
 
 def _environment(
@@ -153,7 +156,12 @@ def load_storage_settings(
 def load_settings(
     env_path: Path | None = None, *, environ: Mapping[str, str | None] | None = None
 ) -> Settings:
-    values = _environment(env_path, environ)
+    values = {
+        "MAX_ACTIVE_ANSWERS": "8",
+        "MAX_ANSWER_WAITERS": "64",
+        "ANSWER_TIMEOUT_SECONDS": "120",
+        **_environment(env_path, environ),
+    }
     return Settings(
         **asdict(load_storage_settings(environ=values)),
         host=_text(values, "HOST") or "127.0.0.1",
@@ -191,6 +199,11 @@ def load_settings(
         llm_fallback_enabled=_bool(values, "LLM_FALLBACK_ENABLED", True),
         min_search_quality_score=_float(
             values, "MIN_SEARCH_QUALITY_SCORE", minimum=0.0, maximum=1.0
+        ),
+        max_active_answers=_int(values, "MAX_ACTIVE_ANSWERS"),
+        max_answer_waiters=_int(values, "MAX_ANSWER_WAITERS"),
+        answer_timeout_seconds=_float(
+            values, "ANSWER_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
         ),
     )
 
