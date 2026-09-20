@@ -1,7 +1,95 @@
+import multiprocessing
 from copy import deepcopy
+from dataclasses import replace
 
 import e2e_live
+import httpx
 import pytest
+from local_upstream import local_server
+
+from llm_ocs_bridge.llm import validate_answer
+
+
+def test_live_cases_have_distinct_valid_expected_answers():
+    assert len(e2e_live._CASES) == 4
+    assert {query["type"] for _, query, _ in e2e_live._CASES} == {
+        "single",
+        "multiple",
+        "judgement",
+        "completion",
+    }
+    for _, query, expected in e2e_live._CASES:
+        assert validate_answer(expected, query["type"], tuple(query["options"]))
+    assert e2e_live._CASES[0][2] != "A"
+
+
+def test_live_budget_rejects_the_seventeenth_attempt():
+    budget = multiprocessing.get_context("spawn").Value("i", 0)
+    for _ in range(16):
+        e2e_live.reserve_attempt(budget)
+    with pytest.raises(RuntimeError, match="budget exhausted"):
+        e2e_live.reserve_attempt(budget)
+    assert budget.value == 16
+
+
+def test_live_cases_stop_at_shared_budget(settings, monkeypatch):
+    budget = multiprocessing.get_context("spawn").Value("i", 15)
+    called = []
+
+    async def check(port, mode, query, expected, retries, case):
+        e2e_live.reserve_attempt(budget)
+        called.append((mode, case))
+        return {"passed": True}
+
+    monkeypatch.setattr(e2e_live, "check", check)
+    first = e2e_live.check_cases(1, "search", settings, budget)
+    second = e2e_live.check_cases(1, "fallback", settings, budget)
+    assert called == [("search", "non-first-single")]
+    assert first[-1]["passed"] is False
+    assert second[0]["passed"] is False
+
+
+def test_live_runner_records_safe_case_failure(settings, monkeypatch):
+    budget = multiprocessing.get_context("spawn").Value("i", 0)
+
+    async def check(*args):
+        raise RuntimeError("synthetic-secret-must-not-be-exported")
+
+    monkeypatch.setattr(e2e_live, "check", check)
+    result = e2e_live.check_cases(1, "search", settings, budget)
+    assert len(result) == 1
+    assert result[0]["passed"] is False
+    assert result[0]["failures"] == ["RuntimeError"]
+    assert "synthetic-secret" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
+    settings, monkeypatch
+):
+    budget = multiprocessing.get_context("spawn").Value("i", 15)
+    attempts = []
+    original = httpx.AsyncHTTPTransport.handle_async_request
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", original)
+    with local_server("upstream", {}) as upstream:
+        e2e_live.instrument_transport(
+            replace(settings, openai_base_url=upstream), budget, attempts
+        )
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.post(f"{upstream}/v1/chat/completions", json={})
+                assert response.status_code == 200
+                with pytest.raises(RuntimeError, match="budget exhausted"):
+                    await client.post(f"{upstream}/v1/chat/completions", json={})
+                with pytest.raises(RuntimeError, match="Unexpected live"):
+                    await client.get("https://example.org/forbidden")
+        finally:
+            httpx.AsyncHTTPTransport.handle_async_request = original
+        async with httpx.AsyncClient(trust_env=False) as client:
+            records = (await client.get(f"{upstream}/observations")).json()
+    assert len(records) == 1
+    assert attempts == [{"provider": "llm", "status": 200}]
+    assert budget.value == 16
 
 
 @pytest.mark.asyncio
@@ -82,7 +170,7 @@ async def test_live_check_validates_contract_and_actual_attempts(
         }
 
     monkeypatch.setattr(e2e_live, "curl", curl)
-    result = await e2e_live.check(1, "search")
+    result = await e2e_live.check(1, "search", cold_count=8)
     assert result["passed"] is passed, result
 
 

@@ -6,11 +6,11 @@ import hashlib
 import json
 import multiprocessing
 import socket
+import subprocess
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
-from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -24,29 +24,70 @@ _QUERY = {
     "options": ["A. Guido van Rossum", "B. Linus Torvalds"],
     "type": "single",
 }
+_MAX_ATTEMPTS = 16
+_CASES = (
+    (
+        "non-first-single",
+        {
+            "title": "Python 编程语言的主要创始人是谁？",
+            "options": ["A. Linus Torvalds", "B. Guido van Rossum"],
+            "type": "single",
+        },
+        "B",
+    ),
+    (
+        "multiple",
+        {
+            "title": "以下哪些元素属于稀有气体（noble gases）？",
+            "options": ["A. 氦 He", "B. 氧 O", "C. 氖 Ne", "D. 氮 N"],
+            "type": "multiple",
+        },
+        "A#C",
+    ),
+    (
+        "judgement",
+        {
+            "title": "水的化学式是 H2O。",
+            "type": "judgement",
+            "options": ["正确", "错误"],
+        },
+        "正确",
+    ),
+    (
+        "completion",
+        {
+            "title": "元素周期表中，氢元素的化学符号是____，氧元素的化学符号是____。",
+            "options": [],
+            "type": "completion",
+        },
+        "H#O",
+    ),
+)
 
 
-def serve(connection, settings):
-    asyncio.run(serve_async(connection, settings))
+def reserve_attempt(budget):
+    with budget.get_lock():
+        if budget.value >= _MAX_ATTEMPTS:
+            raise RuntimeError("Live E2E attempt budget exhausted")
+        budget.value += 1
 
 
-async def serve_async(connection, settings):
-    app = create_app(settings)
-    attempts = []
-    original_send = httpx.AsyncClient.send
-    llm_host = urlsplit(settings.openai_base_url).hostname
+def instrument_transport(settings, budget, attempts):
+    original = httpx.AsyncHTTPTransport.handle_async_request
+    llm_url = httpx.URL(settings.openai_base_url)
 
-    async def send(client, request, *args, **kwargs):
-        if request.url.host == llm_host:
+    async def send(transport, request):
+        if (request.url.host, request.url.port) == (llm_url.host, llm_url.port):
             provider = "llm"
-        elif request.url.host == "api.exa.ai":
+        elif request.url.host == "api.exa.ai" and request.url.scheme == "https":
             provider = "exa"
         else:
             raise RuntimeError("Unexpected live upstream destination")
+        reserve_attempt(budget)
         attempt = {"provider": provider, "status": None}
         attempts.append(attempt)
         try:
-            response = await original_send(client, request, *args, **kwargs)
+            response = await original(transport, request)
         except httpx.TransportError as exc:
             attempt["error"] = type(exc).__name__
             attempt["retryable"] = True
@@ -54,7 +95,28 @@ async def serve_async(connection, settings):
         attempt["status"] = response.status_code
         return response
 
-    httpx.AsyncClient.send = send
+    httpx.AsyncHTTPTransport.handle_async_request = send
+    return original
+
+
+def failure(mode, case, reason):
+    return {
+        "mode": mode,
+        "case": case,
+        "passed": False,
+        "failures": [reason],
+        "attempts": [],
+    }
+
+
+def serve(connection, settings, budget):
+    asyncio.run(serve_async(connection, settings, budget))
+
+
+async def serve_async(connection, settings, budget):
+    app = create_app(settings)
+    attempts = []
+    original = instrument_transport(settings, budget, attempts)
 
     @app.get("/live-attempts")
     async def observed_attempts():
@@ -78,6 +140,7 @@ async def serve_async(connection, settings):
         finally:
             server.should_exit = True
             await task
+            httpx.AsyncHTTPTransport.handle_async_request = original
 
 
 async def curl(port, path, payload=None, token=_TOKEN):
@@ -199,20 +262,30 @@ def validate_case(result, expected_answer="A", max_retries=2):
     return failures
 
 
-async def check(port, mode, query=None, expected_answer="A", max_retries=2):
+async def check(
+    port,
+    mode,
+    query=None,
+    expected_answer="A",
+    max_retries=2,
+    case="python-creator",
+    cold_count=1,
+):
     query = _QUERY if query is None else query
     snapshots = {"before": await snapshot(port)}
     unauthorized = await curl(port, "/search", query, "incorrect-token")
     snapshots["auth"] = await snapshot(port)
     started = perf_counter()
-    cold = await asyncio.gather(*(curl(port, "/search", query) for _ in range(8)))
+    cold = await asyncio.gather(
+        *(curl(port, "/search", query) for _ in range(cold_count))
+    )
     cold_ms = (perf_counter() - started) * 1000
     snapshots["cold"] = await snapshot(port)
     warm = await curl(port, "/search", query)
     snapshots["warm"] = await snapshot(port)
     result = {
         "mode": mode,
-        "case": "python-creator",
+        "case": case,
         "unauthorized": unauthorized,
         "cold_ms": cold_ms,
         "cold": cold,
@@ -226,6 +299,57 @@ async def check(port, mode, query=None, expected_answer="A", max_retries=2):
     return result
 
 
+def check_cases(port, mode, settings, budget):
+    results = []
+    for case, query, expected in _CASES:
+        if budget.value >= _MAX_ATTEMPTS:
+            results.append(failure(mode, case, "attempt budget exhausted"))
+            break
+        try:
+            results.append(
+                asyncio.run(
+                    check(port, mode, query, expected, settings.max_llm_retries, case)
+                )
+            )
+        except Exception as exc:
+            results.append(failure(mode, case, type(exc).__name__))
+            break
+    return results
+
+
+def check_mode(context, settings, mode, budget):
+    with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
+        live = replace(
+            settings,
+            cache_path=str(Path(directory) / "live.sqlite3"),
+            access_token=_TOKEN,
+            exa_api_key=settings.exa_api_key if mode == "search" else "",
+            llm_fallback_enabled=mode == "fallback",
+        )
+        connection, child = context.Pipe()
+        process = context.Process(target=serve, args=(child, live, budget))
+        process.start()
+        child.close()
+        results = []
+        try:
+            if not connection.poll(30):
+                raise TimeoutError("Live E2E server did not become ready")
+            results = check_cases(connection.recv(), mode, live, budget)
+        except Exception as exc:
+            results.append(failure(mode, "startup", type(exc).__name__))
+        finally:
+            if process.is_alive():
+                connection.send("stop")
+            process.join(20)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+            connection.close()
+        if process.exitcode != 0:
+            results.append(failure(mode, "shutdown", "unclean server exit"))
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm-paid", action="store_true")
@@ -233,45 +357,34 @@ def main():
     args = parser.parse_args()
     if not args.confirm_paid:
         parser.error("Real upstream calls require --confirm-paid")
-    env_path = Path.cwd() / ".env"
+    root = Path(__file__).resolve().parents[1]
+    env_path = root / ".env"
     before = hashlib.sha256(env_path.read_bytes()).digest()
-    settings = load_settings()
+    settings = load_settings(env_path)
     assert settings.openai_api_key and settings.exa_api_key, (
         "Existing keys are required"
     )
     context = multiprocessing.get_context("spawn")
+    budget = context.Value("i", 0)
     results = []
     for mode in ("search", "fallback"):
-        with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
-            live = replace(
-                settings,
-                cache_path=str(Path(directory) / "live.sqlite3"),
-                access_token=_TOKEN,
-                exa_api_key=settings.exa_api_key if mode == "search" else "",
-                llm_fallback_enabled=mode == "fallback",
-            )
-            connection, child = context.Pipe()
-            process = context.Process(target=serve, args=(child, live))
-            process.start()
-            try:
-                if not connection.poll(30):
-                    raise TimeoutError("Live E2E server did not become ready")
-                results.append(
-                    asyncio.run(
-                        check(connection.recv(), mode, max_retries=live.max_llm_retries)
-                    )
-                )
-            finally:
-                connection.send("stop")
-                process.join(20)
-                if process.is_alive():
-                    process.terminate()
-                    process.join()
-                connection.close()
-                child.close()
-            assert process.exitcode == 0, "Live E2E server did not exit cleanly"
-    assert hashlib.sha256(env_path.read_bytes()).digest() == before, ".env changed"
-    args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2))
+        results.extend(check_mode(context, settings, mode, budget))
+        if budget.value >= _MAX_ATTEMPTS:
+            break
+    unchanged = hashlib.sha256(env_path.read_bytes()).digest() == before
+    report = {
+        "revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
+        "attempt_budget": _MAX_ATTEMPTS,
+        "attempts_used": budget.value,
+        "env_unchanged": unchanged,
+        "results": results,
+        "passed": unchanged
+        and len(results) == 8
+        and all(row["passed"] for row in results),
+    }
+    args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(
         json.dumps(
             [
@@ -284,7 +397,7 @@ def main():
             ]
         )
     )
-    if not all(row["passed"] for row in results):
+    if not report["passed"]:
         raise SystemExit("Live E2E failed; inspect safe result JSON")
 
 
