@@ -551,7 +551,7 @@ async def test_cached_answer_needs_six_worker_calls(settings, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_calls_count_actual_http_attempts(settings):
+async def test_llm_calls_count_attempt_hook_invocations(settings):
     metrics = AsyncMock()
 
     async def answer(*args, on_attempt, **kwargs):
