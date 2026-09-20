@@ -1,9 +1,38 @@
+import pytest
+
 from llm_ocs_bridge.models import OCSQuery
 from llm_ocs_bridge.questions import (
+    QuestionError,
     allowed_option_labels,
     format_options_for_prompt,
     normalize_query,
+    parse_query,
 )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"title": ""}, "题目不能为空"),
+        ({"title": "  "}, "题目不能为空"),
+        ({"title": None}, "题目不能为空"),
+        ({"title": 1}, "题目必须是字符串"),
+        ({"title": "q", "type": 1}, "题型必须是字符串"),
+        ({"title": "q", "options": {}}, "选项必须是字符串或字符串数组"),
+        ({"title": "q", "options": ("a",)}, "选项必须是字符串或字符串数组"),
+        ({"title": "q", "options": ["a", 1]}, "选项必须是字符串数组"),
+        ({"title": "q", "options": [None]}, "选项必须是字符串数组"),
+    ],
+)
+def test_parse_query_rejects_invalid_fields(settings, payload, message):
+    with pytest.raises(QuestionError, match=f"^{message}$"):
+        parse_query(payload, settings)
+
+
+def test_parse_query_accepts_null_optional_fields(settings):
+    assert parse_query(
+        {"title": "q", "options": None, "type": None}, settings
+    ) == OCSQuery("q", (), "")
 
 
 def test_normalize_query_parses_options():
