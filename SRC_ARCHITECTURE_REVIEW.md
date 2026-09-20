@@ -14,6 +14,7 @@
 - **第 19 节：当前全量函数清单**，对应运行时`f7dd2e3`，13个扁平模块、130个函数/方法，定义行号已按AST核对。
 - **第 20 节：按六批次标准再次复核的历史记录**，对应`5170015`；224项回归仍通过，但新增复现最近搜索同秒记录排序及LIMIT入选集合改变，当时批次4不能判定完全通过。
 - **第 21 节：R01修复与成本复验**，固定同秒原行序，新增5项参数化回归，全量229项通过；保留原索引，量化组内排序的额外成本。
+- **第 22 节：测试覆盖与假绿审计**，对应`1a08cee`；行覆盖93.75%、分支82.99%，但隔离故障注入证实两处pytest假绿，真实E2E判定器也会接受错误响应。测试验收缺口T01–T03尚未修复，不把源码现有防护与测试保护能力混为一谈。
 - 最新正确性判断：**🟢 R01最近搜索并列排序缺口已修复，既有事务与任务生命周期回归继续通过**。性能判断：**🟢 重复上游工作、冗余数据库操作和短题大证据评分已改善；🟡 极端同秒最近查询、C128吞吐、容量维护停顿及极端长题CPU仍有限制**。不把测试全绿等同于无限制性能保证，不声称验证了真实OCS浏览器交互、跨worker去重或生产容量。
 
 ## 1. 审阅结论与边界
@@ -1929,3 +1930,98 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 - `4851ed2 fix(cache): stabilize recent search ordering`：排序修复、实际结果回归和查询计划断言。
 - `7ad7ff8 test(storage): measure stable ordering costs for tied timestamps`：同秒分组性能基准及使用说明。
 - 本审计更新单独使用`docs(audit): record stable search ordering verification`提交，与业务修复分开。
+
+## 22. 测试覆盖、假绿与E2E充分性审计
+
+### 22.1 结论与测量口径
+
+审阅日期：2026-09-20，Asia/Shanghai；代码快照`1a08cee`。本轮只更新本报告；没有修改业务源码、测试、依赖、真实配置或数据库，没有新增付费调用。故障注入仅发生在仓库外的隔离副本，原始源码保留全部防护。
+
+【品味评分】**🟡 测试有实质价值，但高覆盖率掩盖了少数关键断言和集成缺口。** 取消隔离、后续highlight和最近搜索排序的破坏能被测试拦住；不能把整套测试贬为“全是mock、全部无效”。反过来，两个核心合同被破坏后229项仍通过，真实E2E的通过判定也确有漏洞，不能以测试全绿作为完整验收。
+
+仓库未配置coverage/pytest-cov开发依赖、覆盖率门槛或仓库内CI工作流。本轮通过`uv run --frozen --with coverage`临时使用**coverage.py 7.16.1**，未改变`pyproject.toml`、`uv.lock`或项目虚拟环境依赖；运行完整pytest，启用branch、thread/multiprocessing、subprocess采集及SIGTERM保存，再合并子进程数据。CLI启动路径不是只量父进程。未运行付费E2E或手工性能基准来抬高自动测试覆盖率。
+
+结果：**229 passed，7.76秒**；Ruff和py_compile通过，仅有既有TestClient/HTTPX弃用警告。13个运行时模块合计：
+
+- **行覆盖：1229/1311 = 93.75%**，82条可执行语句未执行。
+- **分支覆盖：322/388 = 82.99%**，66条分支出口未执行。
+- coverage终端的合并值为**91.29%**，不是行覆盖率。
+- 仅排除2条`main.py`中的`TYPE_CHECKING`相关行，没有添加排除规则掩盖业务分支。
+
+| 模块 | 行覆盖 | 分支覆盖 |
+| --- | --- | --- |
+| `app` | 89.91% | 69.23% |
+| `cache` | 93.48% | 77.78% |
+| `config` | 94.31% | 84.38% |
+| `llm` | 91.39% | 83.67% |
+| `main` | 91.33% | 76.47% |
+| `metrics` | 100.00% | 100.00% |
+| `models` | 95.65% | 50.00%（仅2个出口，不能按百分比直接排风险） |
+| `questions` | 87.50% | 75.00% |
+| `search` | 96.21% | 92.00% |
+| `service` | 97.18% | 87.50% |
+| `storage` | 96.36% | 88.89% |
+| `utils` | 100.00% | 100.00% |
+| `__init__` | 空文件，无可执行语句 | 无分支 |
+
+### 22.2 已证实的假绿，而非仅按覆盖率推测
+
+在`/home/yiming/.cache/ocs-coverage-audit/mutations/`为每项变更创建独立源码/测试副本，不复制真实`.env`或数据库。复用已锁定的Python环境，通过`PYTHONPATH`明确导入对应副本。未修改副本对照为229项全通过；每个变体都运行完整pytest，而不是只挑一个测试。以下是5项定向抽样，不是全项目统计意义上的mutation score：
+
+| 注入的错误 | pytest结果 | 判断 |
+| --- | --- | --- |
+| `ExaSearch.search`把发送参数改为`query.title`，丢掉选项和题型 | **229 passed** | T02：关键检索合同没有被锁住。 |
+| `_read_body`删除逐chunk累计大小拒绝逻辑，只剩Content-Length预检 | **229 passed** | T01：无Content-Length的流式请求边界未受测试保护。 |
+| `_answer_request`删除共享任务等待的`asyncio.shield` | 7 failed、222 passed | 取消隔离、等待者恢复及超时回归有实质保护。 |
+| `_map_results`仅保留第一段highlight | 1 failed、228 passed | 后续highlight答案回归能拦截。 |
+| `SearchCacheStore.recent`删除`rowid ASC` | 4 failed、225 passed | 第21节新增结果回归能拦截。 |
+
+**T01 · P2 · 请求流大小限制测试遗漏。** 定位`src/llm_ocs_bridge/app.py:64`的`_read_body`，累计限制在第90–91行；现有`tests/test_app.py`的`test_search_enforces_configured_input_limits`使用普通JSON请求，主要覆盖Content-Length预检。额外ASGI边界探针发送无Content-Length、分两块的13字节JSON，限制12字节：原实现拒绝“请求体超过大小限制”，删除限制的副本却接受`{"title":"q"}`，两者都能通过现有pytest。需要补分块超限、恰好等限和无Content-Length的真实请求/ASGI回归，并断言未调用上游。**这是测试缺口，当前源码本身仍有该防护。**
+
+**T02 · P2 · Exa调用参数未被断言。** 定位`src/llm_ocs_bridge/search.py:53`与`tests/test_search.py`的`test_exa_search_maps_results_and_uses_full_query_semantics`。该测试名宣称完整题目语义，但最终只验证映射结果、评分和调用一次，没有核对发给`client.search`的实际query。`test_render_search_query_preserves_question_structure`单独测了工具函数，不能证明适配器确实调用它。将适配器改成只发送标题后全套仍绿，证明不是等价变更。应对SDK边界的实际args/kwargs建立精确断言，题目、选项及题型都必须进入query；另外用真实SDK配本地HTTP替身验证序列化边界。**当前实现发送的仍是完整query。**
+
+**T03 · P2 · 真实E2E的passed条件不完整。** 定位`tests/e2e_live.py:113`的`check`，尤其第131–141行：冷响应未检查OCS成功code；warm响应未检查HTTP状态和成功code；provider仅要求`any`一条匹配；收集的`attempts`完全不参与passed判定。用合成curl返回值直接调用原判定函数，以下4类错误均得到`passed=true`：
+
+- 冷/热响应都携带`code=0`，但保留`answer="A"`。
+- warm响应HTTP 500，但body仍含`answer="A"`。
+- 一条冷响应返回未知provider，其余响应为正常exa。
+- 实际尝试记录只有LLM HTTP 401、没有成功Exa/LLM记录，但持久化计数声称各调用一次。
+
+探针还表明空attempts也能通过。应验证每条HTTP/OCS合同、每条provider的合法性、warm前后调用增量，以及实际网络尝试和预期重试/计数的关系；不能只相信业务计数或只检查一个正确header。把判定提为可用合成数据测试的逻辑，并补拒绝上述反例的回归，不需要花费真实API额度。
+
+### 22.3 其他函数级缺口与mock边界
+
+这些是需要补测的路径，不代表本轮发现其实现错误：
+
+- `app._read_body`：GET解析/超限整段未执行；无Content-Length分支、非法/负Content-Length、JSON数组等非对象拒绝路径未执行。
+- `questions._fields`：null处理及非字符串标题/题型、非法options容器、数组中混入非字符串等输入边界未执行；`parse_query`的空题目拒绝也未执行。相比继续补正常案例，这些更值得优先覆盖。
+- `AnswerCacheStore.delete`：实际SQL方法两行均未执行。`test_invalid_cached_answer_is_deleted_and_regenerated`把get/delete/set都替换为AsyncMock，只证明编排调用了delete，不证明真实记录被删除；应至少增加一条真实SQLite坏缓存恢复集成回归。
+- `service._get_answerer`：延迟创建真实answerer的路径未执行；`_answer_query`的fallback答案缓存命中返回未执行。后者在旧真实E2E有样本，但没有被普通229项回归锁住。
+- `test_llm_calls_count_actual_http_attempts`实际是合成answer函数手动调用两次on_attempt，再检查计数hook；作为单元测试有价值，但不能单凭名字将其当成真实传输尝试验证。
+- `storage`已覆盖真实SQLite、跨任务互斥、排队COMMIT取消、重复取消及重开后持久化检查；相关测试并非只验证mock。checkpoint被其他连接阻塞等少数异常出口仍未覆盖，不应为了达到100%先堆无关异常测试。
+
+### 22.4 E2E和真实API是否充足
+
+| 层级 | 当前证据 | 能证明 / 不能证明 |
+| --- | --- | --- |
+| pytest组件与集成 | 229项；TestClient、临时SQLite、HTTPX MockTransport/自定义流、可控异步任务 | 能验证多种错误分类、重试、限额、事务、取消和缓存合同；但大量provider/store替身绕过了真实SDK或SQL，T01/T02就是实际缺口。 |
+| 本地进程E2E | DEBUG子进程真实启动并访问`/health`；手动benchmark客户端与服务端分进程，走loopback HTTP | 能验证启动、HTTP入口、数据库及并发编排；benchmark上游是异步替身，不等于Exa SDK和LLM网络协议E2E，也不自动参与pytest。 |
+| 真实API冒烟 | 既有`tests/e2e_live.py`，真实curl、本地服务、临时数据库和真实Exa/LLM | 有端到端连通性证据，但只有一题、两种模式且答案始终A；passed判定存在T03，不能作为完整发布门槛。 |
+| 真实OCS使用端 | 未找到真实OCS浏览器/插件自动化验证 | 不能声称已验证插件导入配置、真实页面取题、答案回填或长期使用行为。 |
+
+本轮重新读取`/home/yiming/.cache/ocs-live-final-v2.json`：search/fallback两组各8个冷响应确实均HTTP200、code=1、answer=A，provider也正确；search有1次Exa+1次LLM，fallback有1次LLM，网络状态均200；warm为200/code=1/A且无provider。**这些原始成功是真实记录，不因T03而被否定；问题是今后错误也可能被判绿。**
+
+两组实际上都使用同一题“Python编程语言的主要创始人”，仅单选、正确选项A；8个同题并发不是8个不同语义场景。它不足以证明多选、判断、填空、非首选项映射、搜索空结果/失败后的恢复、跨选项隔离及完整题目传参，也不能证明回答依赖检索证据而非模型常识。旧记录对应此前运行时，本轮没有重新调用付费上游，不冒称最新真实API验收。
+
+无需在付费服务上制造429/503或做吞吐压测。那些场景应该在本地、通过真实HTTP/SDK配可控provider验证。修好T03后，再用少量已授权真实请求覆盖非A单选、多选、判断和填空等代表性格式，作为独立手工/受控任务保留；不要把自动调用付费API加入普通pytest。
+
+### 22.5 补测顺序与可复验材料
+
+1. **先关闭T01–T03**：把两个存活变体变成确定失败，把四种E2E错误判为失败；这比提升几个百分点优先。
+2. 增加不调用付费服务的协议级E2E：真实应用、临时SQLite、真实SDK/HTTPX连接本地可控上游；覆盖正常响应、重试/确定性失败、慢分块取消、搜索恢复和warm命中不新增上游。
+3. 补GET/流式body/字段类型、真实答案删除与fallback warm命中的小型回归；少量真实API只补代表性语义场景，不反复重跑同一A题凑样本数。
+4. 将行/分支覆盖命令与门槛纳入项目验证流程，至少防止已验证覆盖倒退；不要只设置一个总百分比，更不要把100%当成断言充分性的证明。本轮未擅自添加依赖或CI。
+
+可复验材料均位于`/home/yiming/.cache/ocs-coverage-audit/`：`coverage.ini`记录完整测量配置，`coverage.json`含逐行/逐分支及函数明细，`html/index.html`可视化查看；`mutations/*/result.log`保留未改副本及五个变体的完整pytest结果；`e2e-verdict-probe.py`与JSON保留判定器反例，`stream-boundary-probe.jsonl`记录原实现拒绝、删防护副本接受同一超限流的结果。材料不进入真实数据库或付费上游。
+
+覆盖采集入口为`uv run --frozen --with coverage==7.16.1 python -m coverage run --rcfile=/home/yiming/.cache/ocs-coverage-audit/coverage.ini -m pytest`；重测前使用同配置的`coverage erase`清理旧数据，再执行`coverage combine`与`coverage json/report/html`，避免把不同代码版本的结果混在一起。临时工具安装不等于仓库已经拥有可执行覆盖率门槛。
