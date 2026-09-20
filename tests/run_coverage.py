@@ -7,8 +7,8 @@ from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LINE_BASELINE = Fraction(1253, 1311)
-BRANCH_BASELINE = Fraction(343, 388)
+LINE_BASELINE = Fraction(1257, 1312)
+BRANCH_BASELINE = Fraction(342, 386)
 
 
 def check_report(report):
