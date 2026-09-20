@@ -126,6 +126,66 @@ async def test_answer_finishes_after_all_waiters_cancel(settings):
 
 
 @pytest.mark.asyncio
+async def test_abandoned_shared_answer_reports_failure_without_raw_message(
+    settings, caplog
+):
+    import gc
+
+    loop = asyncio.get_running_loop()
+    original_handler = loop.get_exception_handler()
+    unhandled = []
+    loop.set_exception_handler(lambda loop, context: unhandled.append(context))
+    try:
+        async with controlled_runtime(settings) as (runtime, entered, release):
+            runtime.answer_cache.set = AsyncMock(
+                side_effect=RuntimeError("synthetic-private-value")
+            )
+            task = asyncio.create_task(
+                service_module.answer(
+                    runtime, OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+                )
+            )
+            async with asyncio.timeout(1):
+                await entered.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                release.set()
+                while runtime._answers:
+                    await asyncio.sleep(0)
+            runtime.answer_cache.set.reset_mock(side_effect=True)
+            gc.collect()
+            await asyncio.sleep(0)
+            assert unhandled == []
+            assert "Shared answer failed: RuntimeError" in caplog.text
+            assert "synthetic-private-value" not in caplog.text
+            assert runtime._waiters == 0
+    finally:
+        loop.set_exception_handler(original_handler)
+
+
+@pytest.mark.asyncio
+async def test_shared_internal_failure_still_reaches_active_waiters(settings, caplog):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.answer_cache.set = AsyncMock(side_effect=RuntimeError("storage failed"))
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        tasks = [
+            asyncio.create_task(service_module.answer(runtime, query)) for _ in range(2)
+        ]
+        async with asyncio.timeout(1):
+            await entered.wait()
+            while runtime._waiters < 2:
+                await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(isinstance(result, RuntimeError) for result in results)
+        assert [str(result) for result in results] == ["storage failed"] * 2
+        assert caplog.text.count("Shared answer failed: RuntimeError") == 1
+        assert not runtime._answers
+        assert runtime._waiters == 0
+
+
+@pytest.mark.asyncio
 async def test_runtime_close_cancels_owned_answers_before_database(settings):
     async with controlled_runtime(settings) as (runtime, entered, release):
         query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
@@ -337,6 +397,7 @@ async def test_shared_answer_timeout_is_not_reset_by_late_waiters(settings):
 async def test_answer_deadline_includes_initial_cache_wait(settings):
     settings = replace(settings, answer_timeout_seconds=0.02)
     async with controlled_runtime(settings) as (runtime, entered, release):
+
         async def wait_for_cache(key):
             await release.wait()
 
@@ -356,6 +417,7 @@ async def test_answer_deadline_includes_retry_backoff(settings):
         settings, answer_timeout_seconds=0.1, llm_retry_backoff_seconds=1
     )
     async with controlled_runtime(settings) as (runtime, entered, release):
+
         async def model(messages, on_attempt):
             await on_attempt()
             entered.set()
@@ -513,6 +575,7 @@ async def test_llm_calls_count_actual_http_attempts(settings):
 )
 async def test_llm_protocol_failures_are_logged(error_name, settings):
     from llm_ocs_bridge import llm as llm_module
+
     error = getattr(llm_module, error_name)("provider failure")
     runtime = service_module.build_runtime(settings)
     runtime.answerer = AsyncMock()

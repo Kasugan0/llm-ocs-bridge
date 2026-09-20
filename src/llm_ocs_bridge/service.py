@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from time import time
@@ -274,12 +275,22 @@ async def _answer_request(
     if task is None:
         task = asyncio.create_task(_answer_deadline(runtime, query, expires))
         runtime._answers[key] = task
-        task.add_done_callback(lambda finished: runtime._answers.pop(key))
+        task.add_done_callback(lambda finished: _finish_answer(runtime, key, finished))
     runtime._waiters += 1
     try:
         return await asyncio.shield(task)
     finally:
         runtime._waiters -= 1
+
+
+def _finish_answer(
+    runtime: Runtime, key: str, task: asyncio.Task[AnswerResult]
+) -> None:
+    runtime._answers.pop(key)
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logging.getLogger(__name__).error(
+            "Shared answer failed: %s", type(error).__name__
+        )
 
 
 async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
