@@ -154,12 +154,15 @@ async def test_protocol_search_failure_cache_and_recovery(settings, failure):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,attempts,success", [(503, 2, True), (429, 2, True), (401, 1, False)]
+    "status,attempts,success",
+    [(503, 2, True), (429, 2, True), (401, 1, False), (503, 3, False), (429, 3, False)],
 )
 async def test_protocol_retry_classification_counts_actual_requests(
     settings, status, attempts, success
 ):
-    async with running(settings, {"llm": [{"status": status}, {}]}) as (
+    responses = [{"status": status}, {}] if success else [{"status": status}]
+    error_type = "ProviderProtocolError" if status == 401 else "TransientLLMError"
+    async with running(settings, {"llm": responses}) as (
         client,
         control,
     ):
@@ -170,18 +173,18 @@ async def test_protocol_retry_classification_counts_actual_requests(
         llm = [row for row in records if row["provider"] == "llm"]
         assert len(llm) == attempts
         assert [row["status"] for row in llm] == (
-            [status, 200] if success else [status]
+            [status, 200] if success else [status] * attempts
         )
         stats = (await client.get("/stats")).json()
         assert stats["counters"]["llm_calls"] == attempts
         if not success:
             assert "x-search-provider" not in response.headers
-            assert "ProviderProtocolError" in str(stats)
+            assert error_type in str(stats)
     with sqlite3.connect(settings.cache_path) as database:
         counters = dict(database.execute("SELECT metric, value FROM metric_counters"))
         assert counters["llm_calls"] == attempts
         errors = database.execute("SELECT error_type FROM error_log").fetchall()
-        assert errors == ([] if success else [("ProviderProtocolError",)])
+        assert errors == ([] if success else [(error_type,)])
 
 
 @pytest.mark.asyncio
