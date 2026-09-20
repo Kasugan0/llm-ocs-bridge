@@ -16,7 +16,25 @@ uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
 uv run --frozen python tests/benchmark.py --rounds 5 --requests 600 --output /tmp/ocs-benchmark.json
 ```
 
-输出逐轮请求数、成功数、吞吐、P50/P95 和实际搜索/LLM 尝试数；失败不能当作成功吞吐。该基准将冷题上限提高到 128、等待者上限提高到 256，以便对比相同负载；默认准入上限和超时另由自动回归验证。不同版本必须使用相同数据和测量条件，不将模拟上游延迟当成真实 provider 性能。
+输出逐轮成功数、错误分类、成功吞吐、P50/P95、锁等待、事件循环延迟、工作线程操作、提交数和搜索/LLM 尝试数；失败不计成功吞吐。每个场景使用独立 HTTP 连接池，覆盖搜索答案命中、搜索返回空后的 fallback 答案命中、同题与不同冷题。该基准将冷题上限提高到 128、等待者上限提高到 256；默认准入和超时另由回归验证。不同版本必须使用相同数据、交错重复测量，不将模拟上游延迟当成真实 provider 性能。
+
+存储与大证据专项基准也只使用合成数据；无时间阈值断言，不加入普通 pytest：
+
+```bash
+uv run --frozen python tests/benchmark_storage.py --rounds 5 --rows 50000 --output /tmp/ocs-storage.json
+uv run --frozen python tests/benchmark_storage.py --rounds 5 --rows 50000 --capacity-bytes 69337088 --output /tmp/ocs-storage-fixed.json
+uv run --frozen python tests/benchmark_evidence.py --rounds 5 --output /tmp/ocs-evidence.json
+```
+
+存储基准交错创建相同行数的有索引/无索引临时库，比较查询计划、文件大小、写入、维护分段、64次近容量混合读写和保留行数；默认按各库活跃页减相同余量设预算，`--capacity-bytes`用于相同绝对容量比较。两种口径必须分开，索引空间导致少保留记录也必须报告。证据基准覆盖短/长证据及长题，记录评分、JSON/context哈希、字节数和同步处理造成的事件循环延迟。
+
+新版真实上游验收必须显式授权付费，复用当前目录 `.env`，不修改它或真实数据库：
+
+```bash
+uv run --frozen python tests/e2e_live.py --confirm-paid --output /tmp/ocs-live.json
+```
+
+脚本在两个独立临时库上分别运行 Exa+LLM 与禁用 Exa 的 fallback；每种模式用 curl 发送 8 个同题并发请求，再验证答案缓存和错误鉴权。只记录合成题目、响应、指标及实际 HTTP 尝试的 provider/状态码，不输出凭据；无重试成功时总计 1 次 Exa、2 次 LLM。失败时检查输出，勿循环重试付费调用。
 
 ## 手工 HTTP 验收
 
