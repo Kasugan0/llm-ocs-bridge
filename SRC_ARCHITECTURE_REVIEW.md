@@ -2025,3 +2025,93 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 可复验材料均位于`/home/yiming/.cache/ocs-coverage-audit/`：`coverage.ini`记录完整测量配置，`coverage.json`含逐行/逐分支及函数明细，`html/index.html`可视化查看；`mutations/*/result.log`保留未改副本及五个变体的完整pytest结果；`e2e-verdict-probe.py`与JSON保留判定器反例，`stream-boundary-probe.jsonl`记录原实现拒绝、删防护副本接受同一超限流的结果。材料不进入真实数据库或付费上游。
 
 覆盖采集入口为`uv run --frozen --with coverage==7.16.1 python -m coverage run --rcfile=/home/yiming/.cache/ocs-coverage-audit/coverage.ini -m pytest`；重测前使用同配置的`coverage erase`清理旧数据，再执行`coverage combine`与`coverage json/report/html`，避免把不同代码版本的结果混在一起。临时工具安装不等于仓库已经拥有可执行覆盖率门槛。
+
+## 23. 测试可信度修复与协议级 E2E 验收
+
+### 23.1 范围与基线
+
+实施日期：2026-09-20，Asia/Shanghai。基线`b648d64`重新采集为**229 passed，7.56秒**，行`1229/1311`、分支`322/388`，与第22节一致。工具仍为coverage.py 7.16.1，合并线程、multiprocessing及CLI子进程数据；没有调用付费上游抬高覆盖率。
+
+本轮保持13个扁平运行时模块。T01/T02本来就是正确实现，修复的是漏检；T03修改测试判定器。收尾复测实际触发SQLite侧文件权限竞态，**运行时代码仅修改`storage.Database._secure_file_permissions`**并单独提交。其余为测试、测试辅助入口和锁定的coverage开发依赖，没有新建CI、增加运行时依赖、修改缓存版本或迁移SDK。
+
+### 23.2 逐函数缺口关闭证据
+
+| 目标函数/边界 | 实施与可复验测试 |
+| --- | --- |
+| `app._read_body`、`app.search` | `test_request_boundaries.py`覆盖无Content-Length、多块/多字节UTF-8、恰好等限和超限、GET序列化字节限制、非法/负Content-Length、非对象JSON及非法编码；拒绝时断言HTTP200/code0、无provider且不进入答题。`test_protocol_chunked_request_limit_avoids_upstream`另从真实loopback HTTP发送chunked请求，断言上游零调用。 |
+| `ExaSearch.search`、`render_search_query` | `test_exa_search_maps_results_and_uses_full_query_semantics`分别检查有/无限制时SDK的精确args/kwargs，期望文本独立写定；协议E2E检查上游真正收到的camelCase序列化载荷、完整选项及题型。 |
+| `ExaSearch._map_results`、`LLMAnswerer._build_messages` | 协议上游提供两段highlight；断言LLM实际收到的messages同时含前段参考与后段答案标记，不止检查mock调用。 |
+| `e2e_live.check`、`validate_case`、`snapshot` | 数据采集与纯判定分离，校验每条冷/热HTTP与OCS合同、答案及provider；独立比较before/auth/cold/warm快照，拒绝缺失/失败尝试、未知上游、热请求新增调用及不符的计数。先补反例运行出9项失败，再修判定；合法瞬态重试和晚到冷请求真实缓存命中允许通过。收尾再补两个反例，证明空provider必须有持久化命中计数佐证：冷请求有真实命中，单个热请求恰好新增一次命中。 |
+| `e2e_live.reserve_attempt`、`instrument_transport` | 两种模式共享进程安全计数，在真实HTTP传输前限额；第17次拒绝，且不触达本地上游。测试验证真实收件记录只有1条，而不是只检查计数hook。 |
+| `AnswerCacheStore.delete`、`service._cached_answer` | `test_invalid_answer_is_deleted_before_generation_and_replaced_durably`使用真实SQLite，在后续检索暂停时确认坏记录已删除，生成后关闭/重开确认新答案持久化。 |
+| `service._answer_query`、`_get_answerer`、`Runtime.aclose` | 真实缓存配事件屏障证明fallback答案读取必须等待搜索不可用，搜索恢复后生成搜索答案且不被fallback挡住；验证延迟构造复用及真实HTTPX客户端关闭。 |
+| `questions._fields`、`parse_query` | 覆盖空白/null标题、非字符串标题/题型、错误选项容器和混合数组；null可选字段遵守现有归一化规则，不改输入合同。 |
+| `LLMAnswerer.answer`、`_call_model` | 本地HTTP验证503/429各重试一次、401不重试、无效答案重试带入前次内容；实际请求条数和持久化`llm_calls`一致。原仅调用hook的测试改名为`test_llm_calls_count_attempt_hook_invocations`，不再冒称网络验证。 |
+| `service.answer`、`_answer_deadline`、`Runtime.aclose` | 32个同题请求仅1搜索+1生成；不同选项/题型各自发请求；真实慢分块和重试退避纳入总预算；取消一个真实HTTP请求处理任务不取消共享业务；关闭先取消业务再释放客户端；过载不额外发上游。 |
+| `run_coverage.check_report`、`collect`、`main` | 独立行/分支门槛；报告必须含全部运行时模块及分支数据，逐模块和总量相符；缺数据、伪造总量、任一倒退均失败，CLI返回非零。 |
+| `Database._secure_file_permissions`、`close` | 覆盖复测在`test_multiple_database_owners_serialize_writes`真实触发WAL删除竞态：`exists()`后另一连接关闭并删除WAL，`chmod`抛FileNotFoundError被误报为权限失败。先补两个实际临时文件删除回归，原实现两项失败；改为直接chmod并只忽略FileNotFoundError，仍传播PermissionError等其他故障。49项存储/缓存以及74项含service的针对性回归通过，提交`2464a5e`。 |
+
+本地协议测试的应用与上游是独立spawn进程；Exa仅通过真实SDK的`api_base`重定向，LLM使用原HTTPX传输。socket审计钩子拒绝非loopback连接及外部DNS，合成凭据和临时库由测试显式传入，不读取真实`.env`。测试控制路由只存在于测试启动器，没有进入产品HTTP接口。
+
+权限修复删除了3次先验exists/stat，原热缓存系统调用断言由9次stat调整为实测6次，aiosqlite工作线程操作仍为6次；这是竞态修复的直接结果，不宣称新的端到端性能收益。删去两个已覆盖分支后百分比分母改变，覆盖门槛确实拒绝`341/386`，没有降低门槛放行；随后补齐真实HTTP的429/503重试耗尽场景，证明各最多3次实际调用、失败OCS合同和错误/指标持久化。
+
+### 23.3 全量回归与覆盖门槛
+
+中间快照`9289d60`为303 passed，40.18秒；收尾补上缓存命中判定、权限竞态及重试耗尽后，最终**310 passed，44.99秒，比基线增加81项**。`uv run --frozen pytest`、`uv run --frozen ruff check src tests pyproject.toml`、`uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py`全部通过。18项真实协议E2E增加约数十秒测试成本，这是换取真实边界验证，不宣称测试变快。仅有既有TestClient/HTTPX弃用警告。
+
+中间快照两次完整采集一致为`1253/1311`、`343/388`；权限竞态修复和重试耗尽回归后的最终覆盖为：
+
+- 行覆盖：**1257/1312 = 95.81%**，基线为93.75%。
+- 分支覆盖：**342/386 = 88.60%**，基线为82.99%；分母变化来自删去先验exists分支，不是排除规则。
+- 合并覆盖：94.17%，**不是行覆盖率**；尚有55条语句、44条分支出口未执行。
+- 修复后第一次完整覆盖采集：310 passed，79.71秒；合并20个不同数据文件，跳过25个相同数据文件。CLI与协议子进程均进入采集。
+- 提高门槛后的第二次清理/完整覆盖采集：310 passed，69.83秒；逐模块和总体计数与第一次完全一致，门槛验证通过。
+
+| 模块 | 已执行行/总行 | 已执行分支/总分支 |
+| --- | --- | --- |
+| app | 108/109 | 25/26 |
+| cache | 88/92 | 14/18 |
+| config | 116/123 | 27/32 |
+| llm | 193/209 | 85/98 |
+| main | 137/150 | 26/34 |
+| metrics | 33/33 | 2/2 |
+| models | 22/23 | 1/2 |
+| questions | 78/80 | 38/40 |
+| search | 128/132 | 48/50 |
+| service | 174/177 | 44/48 |
+| storage | 162/166 | 30/34 |
+| utils | 18/18 | 2/2 |
+| __init__ | 0/0 | 0/0 |
+
+`pyproject.toml`和`uv.lock`固定coverage 7.16.1；`tests/run_coverage.py`从初始精确比值开始，最终门槛提升至`1257/1312`、`342/386`，两项比例均高于中间门槛。没有新增业务排除规则，只沿用工具对TYPE_CHECKING的既有排除。普通入口为`uv run --frozen python tests/run_coverage.py`；默认产物在`~/.cache/llm-ocs-bridge/coverage`，不污染仓库和真实数据库。
+
+### 23.4 定向故障注入复验
+
+五种变体先在`9289d60`完整303项上验证；修复关闭竞态后，又基于`2464a5e`运行时和完整308项重新验证，不复制真实配置或数据库。后续新增两项重试耗尽回归不再修改运行时或这些变体位置。以下为关闭竞态修复后的有效复验结果；修复中途旧stat数量断言不匹配的过渡结果不计入验收。不是全项目mutation score。
+
+| 变体 | 验证结果 |
+| --- | --- |
+| 删除逐chunk累计限制 | 3 failed / 305 passed；两个ASGI超限回归及真实chunked HTTP回归拦截。 |
+| Exa仅发送标题 | 4 failed / 304 passed；两个SDK调用断言、真实序列化及不同题目参数回归拦截。 |
+| 删除共享等待shield | 10 failed / 298 passed；取消、预算及真实协议取消回归拦截。 |
+| 仅保留第一个highlight | 2 failed / 306 passed；原映射回归和实际LLM messages断言拦截。 |
+| 删除最近搜索同秒排序 | 4 failed / 304 passed；四组同秒记录/重启排序回归拦截。 |
+
+### 23.5 真实API冒烟与剩余限制
+
+在本地完整回归、覆盖和五项故障注入通过后，对`9289d60`执行**一次**真实冒烟；固定四种题型，每种分别运行search/fallback。**8/8场景通过，共4次Exa、8次LLM，全部HTTP200，无重试，总预算12/16**。鉴权请求全部按合同拒绝，冷/热响应全部HTTP200/code1；热请求均无provider、无新增出站调用且持久化命中数增加一次。环境文件哈希前后相同，两个真实服务实例只使用独立临时数据库；同题32并发只在免费本地协议测试中验证。
+
+| 场景 | search冷/热答案 | fallback冷/热答案 | 冷响应provider | 结果 |
+| --- | --- | --- | --- | --- |
+| 非首项单选 | B / B | B / B | exa / llm-fallback | 通过 |
+| 多选 | A#C / A#C | A#C / A#C | exa / llm-fallback | 通过 |
+| 判断 | 正确 / 正确 | 正确 / 正确 | exa / llm-fallback | 通过 |
+| 多段填空 | H#O / H#O | H#O / H#O | exa / llm-fallback | 通过 |
+
+原始记录为`/home/yiming/.cache/ocs-coverage-audit/remediation-live.json`，含精确revision、场景、响应、四阶段快照、真实尝试状态及`.env`未修改标识。收尾`7006775`加强缓存命中判定后，使用保存的原始快照**离线**重跑新判定器，仍8/8通过；记录在`remediation-live-offline-verdict.json`，没有额外付费请求。真实上游题目覆盖面已经扩展，但这是小样本连通性与格式冒烟，不宣称普遍答题正确率或长期可靠性。
+
+随后`2464a5e`仅修复本地文件权限竞态，使用真实临时SQLite和全部本地协议场景复验，没有重新运行付费整套。不能将`9289d60`的原始付费记录改写成后续提交的真实调用记录；网络与答案生成代码在这期间未改变。
+
+剩余限制：覆盖率不是断言充分性的证明；仍未验证真实OCS浏览器插件导入、页面取题及回填，也不以常识题答对证明模型因果上依赖检索证据。未覆盖的CLI/LLM/文件系统出口保留在JSON/HTML报告，不为凑100%增加不现实的磁盘故障测试。
+
+材料：`/home/yiming/.cache/ocs-coverage-audit/implementation-baseline.json`、`remediation-coverage/`、`postfix-first-coverage.json`、`remediation-coverage-final/`、`remediation-mutations/*/result.log`、`e2e-verdict-red.log`、`e2e-cache-verdict-red.log`和`storage-permission-race-red.log`，以及23.5节的真实API原始记录与离线判定结果。代码按职责以无签名、带scope英文Conventional Commits原子提交，不改永久签名配置、不推送。

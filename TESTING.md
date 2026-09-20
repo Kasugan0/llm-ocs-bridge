@@ -8,7 +8,15 @@ uv run --frozen ruff check src tests pyproject.toml
 uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
 ```
 
-测试使用合成凭据和临时数据库；DEBUG 启动测试会实际启动子进程、监听 loopback 并请求 HTTP。
+测试使用合成凭据和临时数据库。`test_protocol_e2e.py` 启动独立应用和本地上游进程，真实 Exa SDK/HTTPX 走 loopback HTTP；不替换业务答题方法或网络传输，禁止外部连接及 DNS。覆盖完整检索参数、后续 highlight、32 个同题冷请求合并、选项/题型隔离、fallback 恢复、实际重试次数、慢流预算、取消、过载及关闭。DEBUG 启动测试也实际请求子进程 HTTP。
+
+覆盖率工具已锁定为开发依赖，独立检查行与分支门槛，不将合并百分比误称为行覆盖：
+
+```bash
+uv run --frozen python tests/run_coverage.py
+```
+
+入口先清除自己的旧数据，再采集完整 pytest、合并线程/子进程数据、生成逐模块终端报告及 JSON/HTML，默认写入 `~/.cache/llm-ocs-bridge/coverage`；可用 `--output` 指定目录。门槛为行 `1257/1312`、分支 `342/386`，不靠四舍五入比较；缺失模块、缺失分支数据、模块汇总不一致或任一覆盖倒退均返回非零。普通 pytest 不调用付费 API，付费冒烟不计入自动覆盖率。本轮不新增 CI。
 
 性能基准使用独立客户端/服务端进程、临时磁盘数据库及异步模拟上游，不读取真实凭据、不调用付费 API：
 
@@ -31,13 +39,15 @@ uv run --frozen python tests/benchmark_evidence.py --rounds 5 --output /tmp/ocs-
 
 最近搜索固定按`created_at DESC, rowid ASC`排序：同秒记录沿用原行序，更新已有键不会将其移到同秒分组末尾。`--tie-group-size`控制每秒搜索记录数，默认为1；50000总行数下设为25000，可测全部搜索记录同秒的极端情况。基准中的`recent`使用当前完整列投影和稳定排序，`recent_timestamp_only`仅用于测量旧的不稳定排序成本，不是可用接口模式。现有时间索引提供时间顺序，同秒组内仍有局部排序；不能宣称完全无临时排序，或极端同秒组也有常数查询成本。
 
-新版真实上游验收必须显式授权付费，复用当前目录 `.env`，不修改它或真实数据库：
+真实上游验收必须显式授权付费，复用项目根目录 `.env`（环境变量保持既定优先级），不修改它或真实数据库：
 
 ```bash
 uv run --frozen python tests/e2e_live.py --confirm-paid --output /tmp/ocs-live.json
 ```
 
-脚本在两个独立临时库上分别运行 Exa+LLM 与禁用 Exa 的 fallback；每种模式用 curl 发送 8 个同题并发请求，再验证答案缓存和错误鉴权。只记录合成题目、响应、指标及实际 HTTP 尝试的 provider/状态码，不输出凭据；无重试成功时总计 1 次 Exa、2 次 LLM。失败时检查输出，勿循环重试付费调用。
+脚本在两个独立临时库上分别运行 Exa+LLM 与禁用 Exa 的 fallback；每种模式用 curl 顺序测试非 A 单选、多选、判断和多段填空，每题一次冷请求、一次热请求并验证错误鉴权。预期无重试时 4 次 Exa、8 次 LLM；两个模式共享传输层 **16 次实际出站尝试硬预算**，包含重试。付费端不再做并发测试，失败后不自动重跑整套。
+
+判定同时检查每条 HTTP/OCS 响应、预期答案、provider、鉴权/热请求前后尝试增量及持久化计数；空 provider 需要真实缓存命中计数佐证，单个热请求恰好新增一次命中。合法瞬态或无效答案重试不直接判失败；缺失成功调用、确定性错误后重试、未知 provider、热请求新增调用均判失败。JSON 包含代码版本、预算使用量、`.env` 未变化状态、逐题快照及失败原因；失败返回非零，不输出凭据。只证明服务端和真实上游冒烟，不证明 OCS 浏览器取题/回填。
 
 ## 手工 HTTP 验收
 
@@ -68,4 +78,4 @@ curl --silent --show-error --include http://127.0.0.1:18080/search \
 - 上游失败：检查认证后的 `/stats` 脱敏错误记录；`/search` 仍以 HTTP 200、`code=0` 表达业务失败，不能只看 HTTP 状态码宣布 E2E 成功。
 - 上述认证 curl 请求在冷题/等待者额度耗尽时返回 `{"code":0,"msg":"服务繁忙，请稍后重试"}`；超过答题总预算返回 `{"code":0,"msg":"答题超时"}`。两者均为 HTTP 200，且不带 `X-Search-Provider`。用自动回归的受控阻塞上游验证这些分支，不向付费接口发起过载测试。
 
-本次实际运行结果和补充缺陷修复见 `SRC_ARCHITECTURE_REVIEW.md` 第 15 节；逐函数清单见第 12 节，历史上游阻塞与首次验收见第 13–14 节。尚未验证浏览器内真实 OCS 用户脚本交互。
+本轮覆盖及 E2E 修复结果见 `SRC_ARCHITECTURE_REVIEW.md` 第 23 节；逐函数清单见第 12 节，历史上游验收见第 13–15 节。尚未验证浏览器内真实 OCS 用户脚本交互。
