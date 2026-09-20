@@ -67,9 +67,14 @@ async def main():
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    terms = question_terms(OCSQuery("光合作用释放什么气体？", ("A.氧气", "B.氮气")))
     samples = []
-    for size in (1000, 100000):
+    for size, long_question in ((1000, False), (100000, False), (100000, True)):
+        title = (
+            "".join(chr(0x4E00 + index) for index in range(8192))
+            if long_question
+            else "光合作用释放什么气体？"
+        )
+        terms = question_terms(OCSQuery(title, ("A.氧气", "B.氮气")))
         snippet = ("完全无关的长篇材料" * size)[:size] + "光合作用释放氧气"
         results = [
             SearchResult(f"证据{index}", f"https://example.org/{index}", snippet)
@@ -80,6 +85,7 @@ async def main():
                 {
                     "round": round_number + 1,
                     "characters": len(snippet),
+                    "query_terms": len(terms),
                     **measure(results, terms),
                     "concurrent": await concurrent(results, terms),
                 }

@@ -58,6 +58,25 @@ def test_semantic_score_large_evidence_keeps_late_matches():
     assert ExaSearch._semantic_score(terms, "氧气 H2OO 1.250 氧气 watermelon") == 0.2
 
 
+def test_semantic_score_long_question_uses_bounded_token_scan(monkeypatch):
+    from llm_ocs_bridge import search
+
+    title = "".join(chr(0x4E00 + index) for index in range(8192))
+    terms = question_terms(OCSQuery(title))
+    text = title[300:700] + "无关材料" * 25000
+    original = search._extract_terms
+    expected = len(terms & original(text)) / len(terms)
+    calls = []
+
+    def extract(text):
+        calls.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(search, "_extract_terms", extract)
+    assert ExaSearch._semantic_score(terms, text) == expected
+    assert calls == [len(text)]
+
+
 @pytest.mark.asyncio
 async def test_exa_search_maps_results_and_uses_full_query_semantics(
     settings,

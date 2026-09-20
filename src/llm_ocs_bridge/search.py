@@ -125,6 +125,8 @@ class ExaSearch:
     def _semantic_score(terms: frozenset[str], text: str) -> float:
         if not terms:
             return 0.0
+        if len(terms) > _DIRECT_MATCH_LIMIT:
+            return len(terms & _extract_terms(text)) / len(terms)
         text = text.lower()
         pending = set(terms - _STOP_TERMS)
         pairs = {
@@ -166,6 +168,7 @@ class ExaSearch:
 
 
 _TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*|\d+(?:\.\d+)?|[\u4e00-\u9fff]+")
+_DIRECT_MATCH_LIMIT = 64
 _STOP_TERMS = frozenset(
     [
         "a",
