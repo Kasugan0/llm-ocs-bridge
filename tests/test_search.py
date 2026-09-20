@@ -78,8 +78,9 @@ def test_semantic_score_long_question_uses_bounded_token_scan(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [5, None])
 async def test_exa_search_maps_results_and_uses_full_query_semantics(
-    settings,
+    settings, limit,
 ):
     highlight = (
         "Guido van Rossum is widely recognized as the creator of Python. "
@@ -106,7 +107,7 @@ async def test_exa_search_maps_results_and_uses_full_query_semantics(
         question_type="single",
     )
     with patch.object(search, "_get_client", return_value=client):
-        results, score = await search.search(query, 5)
+        results, score = await search.search(query, limit)
 
     assert results == [
         SearchResult(
@@ -118,7 +119,18 @@ async def test_exa_search_maps_results_and_uses_full_query_semantics(
         )
     ]
     assert score > 0
-    client.search.assert_awaited_once()
+    expected_kwargs = {"type": "auto", "contents": {"highlights": True}}
+    if limit is not None:
+        expected_kwargs["num_results"] = limit
+    client.search.assert_awaited_once_with(
+        "题目：Python之父是谁\n"
+        "题型：single\n"
+        "选项：\n"
+        "- A.Linus\n"
+        "- B.Guido van Rossum\n"
+        "任务：搜索能直接判断正确答案的权威网页证据。",
+        **expected_kwargs,
+    )
 
 
 @pytest.mark.asyncio
