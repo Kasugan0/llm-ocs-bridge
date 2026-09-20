@@ -2112,6 +2112,8 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 
 随后`2464a5e`仅修复本地文件权限竞态，使用真实临时SQLite和全部本地协议场景复验，没有重新运行付费整套。不能将`9289d60`的原始付费记录改写成后续提交的真实调用记录；网络与答案生成代码在这期间未改变。
 
+2026-09-20在当前提交`fc54fde`上按用户要求再次使用项目根目录`.env`中的`OPENAI_API_KEY`和`EXA_API_KEY`执行一次受控真实冒烟。8/8场景通过：search和fallback各覆盖非首项单选、多选、判断、多段填空的冷/热请求；答案分别为`B`、`A#C`、`正确`、`H#O`，冷请求provider符合预期，热请求无provider且命中缓存。共使用4次Exa、8次LLM，全部HTTP200、无重试，实际出站尝试12/16；`.env`前后哈希一致，测试只使用临时SQLite，未打印或写入密钥。原始安全结果保存于`/home/yiming/.cache/ocs-coverage-audit/live-env-20260920-2217.json`，本次仍仅证明受控服务端连通性与协议冒烟，不证明真实OCS浏览器插件导入、取题及回填。
+
 剩余限制：覆盖率不是断言充分性的证明；仍未验证真实OCS浏览器插件导入、页面取题及回填，也不以常识题答对证明模型因果上依赖检索证据。未覆盖的CLI/LLM/文件系统出口保留在JSON/HTML报告，不为凑100%增加不现实的磁盘故障测试。
 
 材料：`/home/yiming/.cache/ocs-coverage-audit/implementation-baseline.json`、`remediation-coverage/`、`postfix-first-coverage.json`、`remediation-coverage-final/`、`remediation-mutations/*/result.log`、`e2e-verdict-red.log`、`e2e-cache-verdict-red.log`和`storage-permission-race-red.log`，以及23.5节的真实API原始记录与离线判定结果。代码按职责以无签名、带scope英文Conventional Commits原子提交，不改永久签名配置、不推送。
