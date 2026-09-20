@@ -25,9 +25,10 @@ class MetricsStore:
         self.db = db
         self.settings = settings
 
-    async def incr(self, metric: str, delta: int = 1) -> None:
+    async def incr(self, **deltas: int) -> None:
+        updated_at = int(time.time())
         async with self.db.write() as db:
-            await db.execute(
+            await db.executemany(
                 """
                 INSERT INTO metric_counters (metric, value, updated_at)
                 VALUES (?, ?, ?)
@@ -35,7 +36,7 @@ class MetricsStore:
                     value = metric_counters.value + excluded.value,
                     updated_at = excluded.updated_at
                 """,
-                (metric, delta, int(time.time())),
+                [(metric, delta, updated_at) for metric, delta in deltas.items()],
             )
 
     async def log_error(
@@ -67,18 +68,18 @@ class MetricsStore:
 
     async def get_counters(self) -> dict[str, int]:
         async with self.db.read() as db:
-            cursor = await db.execute("SELECT metric, value FROM metric_counters")
-            rows = await cursor.fetchall()
-            await cursor.close()
-            values = dict.fromkeys(_COUNTERS, 0)
-            for row in rows:
-                values[str(row["metric"])] = int(row["value"])
-            return values
+            rows = await db.execute_fetchall(
+                "SELECT metric, value FROM metric_counters"
+            )
+        values = dict.fromkeys(_COUNTERS, 0)
+        for row in rows:
+            values[str(row["metric"])] = int(row["value"])
+        return values
 
     async def get_recent_errors(self, limit: int = 10) -> list[dict[str, str | int]]:
         limit = min(max(limit, 0), self.settings.max_error_logs)
         async with self.db.read() as db:
-            cursor = await db.execute(
+            rows = await db.execute_fetchall(
                 """
                 SELECT timestamp, provider, error_type, error_msg
                 FROM error_log
@@ -87,8 +88,6 @@ class MetricsStore:
                 """,
                 (limit,),
             )
-            rows = await cursor.fetchall()
-            await cursor.close()
             return [
                 {
                     "timestamp": int(row["timestamp"]),

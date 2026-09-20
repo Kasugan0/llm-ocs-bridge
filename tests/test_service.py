@@ -423,6 +423,72 @@ async def test_internal_timeout_is_not_misclassified_as_answer_budget(settings):
 
 
 @pytest.mark.asyncio
+async def test_live_search_batches_miss_and_request_counters(settings, monkeypatch):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        commit = AsyncMock(wraps=runtime.db._conn.commit)
+        monkeypatch.setattr(runtime.db._conn, "commit", commit)
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        evidence = await service_module._resolve_evidence(runtime, query)
+        assert evidence.results
+        assert commit.await_count == 3
+        counters = await runtime.metrics_store.get_counters()
+        assert counters["search_cache_misses"] == 1
+        assert counters["search_requests"] == 1
+        assert counters["search_successes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_corrupt_cache_deletion_does_not_count_search_request(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.search_cache.get = AsyncMock(return_value="invalid")
+        runtime.search_cache.delete = AsyncMock(
+            side_effect=RuntimeError("delete failed")
+        )
+        with pytest.raises(RuntimeError, match="delete failed"):
+            await service_module._resolve_evidence(runtime, OCSQuery("open", (), ""))
+        counters = await runtime.metrics_store.get_counters()
+        assert counters["search_cache_misses"] == 1
+        assert counters["search_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cached_answer_needs_six_worker_calls(settings, monkeypatch):
+    from pathlib import Path
+
+    from llm_ocs_bridge.cache import answer_key
+
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        query = OCSQuery("water", ("A.H2O",), "single")
+        await runtime.answer_cache.set(
+            answer_key(query, "search", runtime.settings),
+            query,
+            settings.openai_model,
+            settings.prompt_version,
+            "search",
+            "A",
+        )
+        operations = []
+        execute = runtime.db._conn._execute
+        original_stat = Path.stat
+        stats = []
+
+        async def record(function, *args, **kwargs):
+            operations.append(function.__name__)
+            return await execute(function, *args, **kwargs)
+
+        def stat(path, *args, **kwargs):
+            stats.append(path)
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(runtime.db._conn, "_execute", record)
+        monkeypatch.setattr(Path, "stat", stat)
+        assert (await service_module.answer(runtime, query)).answer == "A"
+        assert len(operations) == 6
+        assert len(stats) == 9
+        assert not runtime.answerer._call_model.called
+
+
+@pytest.mark.asyncio
 async def test_llm_calls_count_actual_http_attempts(settings):
     metrics = AsyncMock()
 
@@ -438,7 +504,7 @@ async def test_llm_calls_count_actual_http_attempts(settings):
     query = OCSQuery(title="question", options=("A.1", "B.2"), question_type="single")
 
     assert await service_module._answer_with_llm(runtime, query, [], False) == "A"
-    assert metrics.incr.await_args_list == [call("llm_calls"), call("llm_calls")]
+    assert metrics.incr.await_args_list == [call(llm_calls=1), call(llm_calls=1)]
 
 
 @pytest.mark.asyncio

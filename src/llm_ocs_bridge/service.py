@@ -93,14 +93,14 @@ async def _cached_answer(
     key = answer_key(query, mode, runtime.settings)
     value = await runtime.answer_cache.get(key)
     if value is None:
-        await runtime.metrics_store.incr("answer_cache_misses")
+        await runtime.metrics_store.incr(answer_cache_misses=1)
         return None
     if validate_answer(value, query.question_type, query.options):
-        await runtime.metrics_store.incr("answer_cache_hits")
+        await runtime.metrics_store.incr(answer_cache_hits=1)
         return value
 
     await runtime.answer_cache.delete(key)
-    await runtime.metrics_store.incr("answer_cache_misses")
+    await runtime.metrics_store.incr(answer_cache_misses=1)
     await runtime.metrics_store.log_error(
         "answer-cache",
         "InvalidCachedAnswer",
@@ -116,10 +116,10 @@ async def _answer_with_llm(
     fallback: bool,
 ) -> str:
     if fallback:
-        await runtime.metrics_store.incr("llm_fallbacks")
+        await runtime.metrics_store.incr(llm_fallbacks=1)
 
     async def record_attempt() -> None:
-        await runtime.metrics_store.incr("llm_calls")
+        await runtime.metrics_store.incr(llm_calls=1)
 
     return await _get_answerer(runtime).answer(
         query,
@@ -138,12 +138,17 @@ async def _resolve_evidence(
     if cached_payload is not None:
         evidence = decode_search_results(cached_payload)
         if evidence:
-            await runtime.metrics_store.incr("search_cache_hits")
+            await runtime.metrics_store.incr(search_cache_hits=1)
             return Evidence(evidence, "cache")
-        await runtime.metrics_store.incr("search_cache_misses")
+        await runtime.metrics_store.incr(search_cache_misses=1)
         await runtime.search_cache.delete(key)
+        if runtime.search_client.enabled:
+            await runtime.metrics_store.incr(search_requests=1)
     else:
-        await runtime.metrics_store.incr("search_cache_misses")
+        counters = {"search_cache_misses": 1}
+        if runtime.search_client.enabled:
+            counters["search_requests"] = 1
+        await runtime.metrics_store.incr(**counters)
 
     if not runtime.search_client.enabled:
         return Evidence(
@@ -152,26 +157,25 @@ async def _resolve_evidence(
             "EXA_API_KEY is required when LLM fallback is disabled",
         )
 
-    await runtime.metrics_store.incr("search_requests")
     try:
         evidence, quality_score = await runtime.search_client.search(
             query,
             settings.search_result_limit,
         )
     except Exception as exc:  # noqa: BLE001
-        await runtime.metrics_store.incr("search_failures")
+        await runtime.metrics_store.incr(search_failures=1)
         await runtime.metrics_store.log_error("search", type(exc).__name__, str(exc))
         return Evidence([], "llm-fallback", "Exa 搜索失败，且未启用 LLM fallback")
 
     if not evidence:
-        await runtime.metrics_store.incr("search_empty_results")
+        await runtime.metrics_store.incr(search_empty_results=1)
         return Evidence(
             [],
             "llm-fallback",
             "Exa 未返回可用证据，且未启用 LLM fallback",
         )
 
-    await runtime.metrics_store.incr("search_successes")
+    await runtime.metrics_store.incr(search_successes=1)
     await runtime.search_cache.set(
         key,
         query,

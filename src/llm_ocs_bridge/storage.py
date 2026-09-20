@@ -4,7 +4,7 @@ import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from threading import Event
 
@@ -166,9 +166,11 @@ class Database:
             raise cancellation
 
     def database_size_bytes(self) -> int:
-        return sum(
-            path.stat().st_size for path in self._database_files() if path.exists()
-        )
+        size = 0
+        for path in self._database_files():
+            with suppress(FileNotFoundError):
+                size += path.stat().st_size
+        return size
 
     async def _enforce_capacity_locked(self, db: aiosqlite.Connection) -> None:
         if self.database_size_bytes() <= self.settings.max_cache_bytes:

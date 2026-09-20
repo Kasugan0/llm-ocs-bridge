@@ -7,6 +7,42 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_capacity_size_stats_each_file_once(settings, monkeypatch):
+    from pathlib import Path
+
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(settings)
+    await database.connect()
+    original_stat = Path.stat
+    paths = []
+
+    def stat(path, *args, **kwargs):
+        paths.append(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    try:
+        assert database.database_size_bytes() > 0
+        assert paths == list(database._database_files())
+    finally:
+        await database.close()
+
+
+def test_capacity_size_does_not_hide_permission_errors(settings, monkeypatch):
+    from pathlib import Path
+
+    from llm_ocs_bridge.storage import Database
+
+    def denied(path, *args, **kwargs):
+        raise PermissionError("synthetic permission failure")
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(PermissionError, match="synthetic permission failure"):
+        Database(settings).database_size_bytes()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("maintenance", ["write", "clear", "reconnect"])
 async def test_capacity_prunes_mixed_cache_and_error_rows(settings, maintenance):
     from llm_ocs_bridge.cache import SearchCacheStore, encode_search_results
@@ -24,7 +60,7 @@ async def test_capacity_prunes_mixed_cache_and_error_rows(settings, maintenance)
         [SearchResult("Water", "https://example.com", "Water is H2O. " * 400)]
     )
     try:
-        await metrics.incr("llm_calls", 42)
+        await metrics.incr(llm_calls=42)
         async with database.write() as connection:
             await connection.execute(
                 "INSERT INTO error_log(timestamp, provider, error_type, error_msg) "
@@ -84,7 +120,7 @@ async def test_cancelled_write_rolls_back(settings, tmp_path):
             await task
         connection = store._conn
         assert not connection.in_transaction
-        await MetricsStore(store, settings).incr("llm_calls")
+        await MetricsStore(store, settings).incr(llm_calls=1)
         assert "cancelled" not in await MetricsStore(store, settings).get_counters()
     finally:
         await store.close()
@@ -139,7 +175,7 @@ async def test_cancelled_queued_commit_rolls_back(
 
     await connection.create_function("pause_worker", 0, pause_worker)
     monkeypatch.setattr(connection, "_execute", observe_queue)
-    writer = asyncio.create_task(metrics.incr("cancelled"))
+    writer = asyncio.create_task(metrics.incr(cancelled=1))
     try:
         await asyncio.wait_for(commit_queued.wait(), 2)
         writer.cancel()
@@ -157,7 +193,7 @@ async def test_cancelled_queued_commit_rolls_back(
         if phase == "prune":
             assert await cache.get("0") == "x" * 10000
         database.settings = settings
-        await metrics.incr("llm_calls")
+        await metrics.incr(llm_calls=1)
         await database.close()
         await database.connect()
         assert "cancelled" not in await metrics.get_counters()
@@ -188,7 +224,7 @@ async def test_cancellation_after_commit_preserves_committed_write(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(connection, "commit", completed_commit)
-    writer = asyncio.create_task(metrics.incr("committed"))
+    writer = asyncio.create_task(metrics.incr(committed=1))
     try:
         await asyncio.wait_for(commit_finished.wait(), 2)
         writer.cancel()
@@ -197,7 +233,7 @@ async def test_cancellation_after_commit_preserves_committed_write(
         assert not connection.in_transaction
         assert (await metrics.get_counters())["committed"] == 1
         monkeypatch.setattr(connection, "commit", commit)
-        await metrics.incr("llm_calls")
+        await metrics.incr(llm_calls=1)
         await database.close()
         await database.connect()
         assert (await metrics.get_counters())["committed"] == 1
@@ -358,7 +394,7 @@ async def test_post_commit_failure_does_not_claim_rollback(
         monkeypatch.setattr(store._conn, "set_authorizer", reset_authorizer)
     try:
         with pytest.raises(PostCommitError, match="Write committed"):
-            await MetricsStore(store, settings).incr("llm_calls")
+            await MetricsStore(store, settings).incr(llm_calls=1)
         assert (await MetricsStore(store, settings).get_counters())["llm_calls"] == 1
         assert not (store._conn).in_transaction
     finally:
@@ -451,7 +487,7 @@ async def test_runtime_stores_share_one_database(settings, monkeypatch):
         )
         await runtime.search_cache.get("absent")
         await runtime.answer_cache.get("absent")
-        await runtime.metrics_store.incr("llm_calls")
+        await runtime.metrics_store.incr(llm_calls=1)
         assert len(opened) == 1
     finally:
         await runtime.aclose()

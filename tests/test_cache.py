@@ -10,6 +10,68 @@ from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.storage import Database
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_name", ["SearchCacheStore", "AnswerCacheStore"])
+async def test_cache_lookup_uses_one_worker_operation(
+    settings, monkeypatch, store_name
+):
+    database = Database(settings)
+    await database.connect()
+    store = getattr(cache_module, store_name)(database)
+    operations = []
+    execute = database._conn._execute
+
+    async def record(function, *args, **kwargs):
+        operations.append(function.__name__)
+        return await execute(function, *args, **kwargs)
+
+    monkeypatch.setattr(database._conn, "_execute", record)
+    try:
+        assert await store.get("missing") is None
+        assert operations == ["_execute_fetchall"]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_batch_commits_once(settings, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from llm_ocs_bridge.metrics import MetricsStore
+
+    database = Database(settings)
+    await database.connect()
+    store = MetricsStore(database, settings)
+    commit = AsyncMock(wraps=database._conn.commit)
+    monkeypatch.setattr(database._conn, "commit", commit)
+    try:
+        await store.incr(llm_calls=2, search_requests=3)
+        commit.assert_awaited_once()
+        counters = await store.get_counters()
+        assert counters["llm_calls"] == 2
+        assert counters["search_requests"] == 3
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_batch_rolls_back_together(settings):
+    import sqlite3
+
+    from llm_ocs_bridge.metrics import MetricsStore
+
+    database = Database(settings)
+    await database.connect()
+    store = MetricsStore(database, settings)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.incr(llm_calls=2, search_requests=None)
+        assert (await store.get_counters())["llm_calls"] == 0
+        assert not database._conn.in_transaction
+    finally:
+        await database.close()
+
+
 def test_answer_cache_key_isolates_prompt_version():
     query = OCSQuery(title="题目", options=("选项",), question_type="single")
     v1 = cache_key(
@@ -138,7 +200,7 @@ async def test_metrics_store_atomic_counters(settings, tmp_path):
     )
     await store.db.connect()
     try:
-        await asyncio.gather(*(store.incr("search_requests") for _ in range(20)))
+        await asyncio.gather(*(store.incr(search_requests=1) for _ in range(20)))
         counters = await store.get_counters()
         assert counters["search_requests"] == 20
     finally:
@@ -164,7 +226,7 @@ async def test_multiple_database_owners_serialize_writes(settings, tmp_path):
         for store in stores:
             await store.db.connect()
         await asyncio.gather(
-            *(store.incr("search_requests") for store in stores for _ in range(10))
+            *(store.incr(search_requests=1) for store in stores for _ in range(10))
         )
         counters = await stores[0].get_counters()
         assert counters["search_requests"] == 20

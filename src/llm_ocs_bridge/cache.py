@@ -17,13 +17,11 @@ class SearchCacheStore:
 
     async def get(self, cache_key: str) -> str | None:
         async with self.db.read() as db:
-            cursor = await db.execute(
+            rows = await db.execute_fetchall(
                 "SELECT payload_json FROM search_cache WHERE cache_key = ?",
                 (cache_key,),
             )
-            row = await cursor.fetchone()
-            await cursor.close()
-            return None if row is None else str(row["payload_json"])
+        return str(rows[0]["payload_json"]) if rows else None
 
     async def set(
         self,
@@ -83,7 +81,7 @@ class SearchCacheStore:
 
     async def recent(self, limit: int, title_limit: int) -> list[dict[str, object]]:
         async with self.db.read() as db:
-            cursor = await db.execute(
+            rows = await db.execute_fetchall(
                 """
                 SELECT query_title, query_type, provider, quality_score, created_at
                 FROM search_cache
@@ -92,18 +90,16 @@ class SearchCacheStore:
                 """,
                 (limit,),
             )
-            rows = await cursor.fetchall()
-            await cursor.close()
-            return [
-                {
-                    "title": str(row["query_title"])[:title_limit],
-                    "question_type": str(row["query_type"]),
-                    "provider": str(row["provider"]),
-                    "quality_score": float(row["quality_score"]),
-                    "created_at": int(row["created_at"]),
-                }
-                for row in rows
-            ]
+        return [
+            {
+                "title": str(row["query_title"])[:title_limit],
+                "question_type": str(row["query_type"]),
+                "provider": str(row["provider"]),
+                "quality_score": float(row["quality_score"]),
+                "created_at": int(row["created_at"]),
+            }
+            for row in rows
+        ]
 
 
 class AnswerCacheStore:
@@ -112,13 +108,11 @@ class AnswerCacheStore:
 
     async def get(self, cache_key: str) -> str | None:
         async with self.db.read() as db:
-            cursor = await db.execute(
+            rows = await db.execute_fetchall(
                 "SELECT answer FROM answer_cache WHERE cache_key = ?",
                 (cache_key,),
             )
-            row = await cursor.fetchone()
-            await cursor.close()
-            return None if row is None else str(row["answer"])
+        return str(rows[0]["answer"]) if rows else None
 
     async def set(
         self,
