@@ -127,6 +127,7 @@ async def test_live_check_validates_contract_and_actual_attempts(
                         "llm_calls": 0
                         if calls == 0
                         else 1 + int(fault == "transient-retry"),
+                        "answer_cache_hits": int(calls >= 9),
                     }
                 },
             }
@@ -180,8 +181,10 @@ def recorded_case():
     empty = {"attempts": [], "counters": {}}
     cold = {
         "attempts": [{"provider": "llm", "status": 200}],
-        "counters": {"llm_calls": 1},
+        "counters": {"llm_calls": 1, "answer_cache_hits": 1},
     }
+    warm = deepcopy(cold)
+    warm["counters"]["answer_cache_hits"] = 2
     return {
         "mode": "fallback",
         "unauthorized": {"status": 200, "body": {"code": 0}, "provider": None},
@@ -191,13 +194,25 @@ def recorded_case():
             "before": deepcopy(empty),
             "auth": empty,
             "cold": cold,
-            "warm": deepcopy(cold),
+            "warm": warm,
         },
     }
 
 
 def test_verdict_allows_late_cold_cache_hits(recorded_case):
     assert e2e_live.validate_case(recorded_case) == []
+
+
+@pytest.mark.parametrize("phase", ["cold", "warm"])
+def test_verdict_requires_persistent_cache_hit_evidence(recorded_case, phase):
+    snapshots = recorded_case["snapshots"]
+    if phase == "cold":
+        snapshots["cold"]["counters"]["answer_cache_hits"] = 0
+    else:
+        snapshots["warm"]["counters"]["answer_cache_hits"] = (
+            snapshots["cold"]["counters"].get("answer_cache_hits", 0)
+        )
+    assert e2e_live.validate_case(recorded_case)
 
 
 @pytest.mark.parametrize("fault", ["auth", "counter", "limit", "unfinished", "lost"])

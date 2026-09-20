@@ -232,6 +232,16 @@ def validate_case(result, expected_answer="A", max_retries=2):
                     failures.append(f"{current} changed {counter}")
 
     before, cold = stages["auth"], stages["cold"]
+    cold_hits = cold["counters"].get("answer_cache_hits", 0) - before["counters"].get(
+        "answer_cache_hits", 0
+    )
+    if any(row["provider"] is None for row in result["cold"]) and cold_hits < 1:
+        failures.append("cold cache response lacks a persistent cache hit")
+    warm_hits = stages["warm"]["counters"].get("answer_cache_hits", 0) - cold[
+        "counters"
+    ].get("answer_cache_hits", 0)
+    if warm_hits != 1:
+        failures.append("warm response lacks one persistent cache hit")
     attempts = cold["attempts"][len(before["attempts"]) :]
     if any(attempt["provider"] not in {"exa", "llm"} for attempt in attempts):
         failures.append("unknown upstream in attempt records")
