@@ -188,10 +188,10 @@ chmod 600 .env
 `check` 会把上游状态转换成可操作的提示。例如：
 
 ```text
-[ERROR] OpenAI 认证失败（HTTP 401）。请检查 .env 中 OPENAI_API_KEY 是否有效，修改后重新运行: uv run llm-ocs-bridge check
+[ERROR] OpenAI 认证失败（HTTP 401）。请检查 .env 中 OPENAI_API_KEY 是否有效。
 ```
 
-遇到 `HTTP 401` 时，检查 `.env` 中的 `OPENAI_API_KEY`；遇到 `HTTP 403` 时，检查账号、项目或组织权限及配额；遇到 `HTTP 404` 时，检查 `OPENAI_BASE_URL` 是否包含正确的 `/v1`，以及 `OPENAI_MODEL` 是否在该服务可用。若使用其他 OpenAI 兼容服务，三个配置必须属于同一个服务商。修改后重新运行 `uv run llm-ocs-bridge check`。
+遇到 `HTTP 401` 时，检查 `.env` 中的 `OPENAI_API_KEY`；遇到 `HTTP 403` 时，检查账号、项目或组织权限及配额；遇到 `HTTP 404` 时，检查 `OPENAI_BASE_URL` 是否包含正确的 `/v1`，以及 `OPENAI_MODEL` 是否在该服务可用。若使用其他 OpenAI 兼容服务，三个配置必须属于同一个服务商。
 
 `check` 的状态提示输出到标准错误，成功时标准输出仍然只包含可导入 OCS 的 JSON；不要把错误提示文本复制进 OCS 配置。
 

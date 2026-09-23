@@ -266,54 +266,46 @@ def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
         )
 
         if isinstance(exc, MissingKeyError):
-            return (
-                "OpenAI API 密钥未配置。请在 .env 中填写 OPENAI_API_KEY，"
-                "并重新运行: uv run llm-ocs-bridge check"
-            )
+            return "OpenAI API 密钥未配置。请在 .env 中填写 OPENAI_API_KEY。"
         if isinstance(exc, ResponseTooLargeError):
             return (
                 "OpenAI 响应超过本地大小限制。请检查 MAX_LLM_RESPONSE_BYTES，"
-                "调整后重新运行: uv run llm-ocs-bridge check"
+                "确认该值足以容纳上游响应。"
             )
         if isinstance(exc, InvalidAnswerError):
             return (
                 "OpenAI 返回的答案格式不符合项目要求。请检查 OPENAI_BASE_URL、"
-                "OPENAI_MODEL 及其兼容接口，再重新运行: uv run llm-ocs-bridge check"
+                "OPENAI_MODEL 及其兼容接口。"
             )
     status = _http_status(exc)
     if status == 401:
         key_name = "OPENAI_API_KEY" if provider == "OpenAI" else "EXA_API_KEY"
         return (
-            f"{provider} 认证失败（HTTP 401）。请检查 .env 中 {key_name} 是否有效，"
-            "修改后重新运行: uv run llm-ocs-bridge check"
+            f"{provider} 认证失败（HTTP 401）。请检查 .env 中 {key_name} 是否有效。"
         )
     if status == 403:
         return (
             f"{provider} 访问被拒绝（HTTP 403）。请检查账号权限、项目或组织配置，"
-            "以及账户配额；确认后重新运行: uv run llm-ocs-bridge check"
+            "以及账户配额。"
         )
     if status == 400:
         if provider == "OpenAI":
             return (
                 "OpenAI 拒绝了请求参数（HTTP 400）。请检查 OPENAI_MODEL、"
                 "OPENAI_BASE_URL 以及该兼容服务是否支持 /chat/completions；"
-                "修改后重新运行: "
-                "uv run llm-ocs-bridge check"
+                "确认配置与服务接口一致。"
             )
         return (
-            "Exa 拒绝了搜索请求参数（HTTP 400）。请检查 exa-py 版本和网络代理，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            "Exa 拒绝了搜索请求参数（HTTP 400）。请检查 exa-py 版本和网络代理。"
         )
     if status == 404:
         if provider == "OpenAI":
             return (
                 "OpenAI 接口或模型不存在（HTTP 404）。请检查 OPENAI_BASE_URL 是否"
-                "包含正确的 /v1，并确认 OPENAI_MODEL 在该服务上可用；修改后重新运行: "
-                "uv run llm-ocs-bridge check"
+                "包含正确的 /v1，并确认 OPENAI_MODEL 在该服务上可用。"
             )
         return (
-            "Exa 接口不存在（HTTP 404）。请检查网络代理或 exa-py 依赖版本，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            "Exa 接口不存在（HTTP 404）。请检查网络代理或 exa-py 依赖版本。"
         )
     if status == 429:
         return (
@@ -322,8 +314,7 @@ def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
         )
     if status in {408, 504}:
         return (
-            f"{provider} 请求超时（HTTP {status}）。请检查网络连接、代理和服务地址，"
-            "稍后重新运行: uv run llm-ocs-bridge check"
+            f"{provider} 请求超时（HTTP {status}）。请检查网络连接、代理和服务地址。"
         )
     if status is not None and status >= 500:
         return (
@@ -333,30 +324,23 @@ def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
     if status is not None:
         return (
             f"{provider} 返回 HTTP {status}，请求未成功。请检查服务地址、"
-            "密钥和账户权限，"
-            "确认后重新运行: uv run llm-ocs-bridge check"
+            "密钥和账户权限。"
         )
     if isinstance(exc, TimeoutError):
         return (
-            f"{provider} 请求超时。请检查网络连接、代理和服务地址，"
-            "确认后重新运行: uv run llm-ocs-bridge check"
+            f"{provider} 请求超时。请检查网络连接、代理和服务地址。"
         )
     if provider == "OpenAI" and isinstance(exc, TransientLLMError):
-        return (
-            "OpenAI 暂时不可用。请检查网络连接、代理和 OPENAI_BASE_URL，"
-            "稍后重新运行: uv run llm-ocs-bridge check"
-        )
+        return "OpenAI 暂时不可用。请检查网络连接、代理和 OPENAI_BASE_URL。"
     if provider == "OpenAI" and isinstance(exc, ProviderProtocolError):
         return (
             "OpenAI 返回了不兼容的响应。请检查 OPENAI_BASE_URL、OPENAI_MODEL，"
-            "以及该服务是否支持 /chat/completions；确认后重新运行: "
-            "uv run llm-ocs-bridge check"
+            "以及该服务是否支持 /chat/completions。"
         )
 
     detail = _safe_error(exc, max_bytes)
     return (
-        f"{provider} 检查失败：{detail}。请检查网络、服务地址和密钥配置，"
-        "修改后重新运行: uv run llm-ocs-bridge check"
+        f"{provider} 检查失败：{detail}。请检查网络、服务地址和密钥配置。"
     )
 
 
@@ -365,15 +349,13 @@ def _configuration_error(exc: Exception, max_bytes: int) -> str:
     if detail == "EXA_API_KEY is required when LLM fallback is disabled":
         return (
             "已关闭 LLM fallback，因此必须配置 EXA_API_KEY。请在 .env 中填写密钥，"
-            "或将 LLM_FALLBACK_ENABLED 改为 true，然后重新运行: "
-            "uv run llm-ocs-bridge check"
+            "或将 LLM_FALLBACK_ENABLED 改为 true。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) is required", detail)
     if match:
         return (
-            f"配置项 {match.group(1)} 缺失。请在当前目录的 .env 中填写该配置，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 缺失。请在当前目录的 .env 中填写该配置。"
         )
 
     match = re.fullmatch(
@@ -381,43 +363,38 @@ def _configuration_error(exc: Exception, max_bytes: int) -> str:
     )
     if match:
         return (
-            f"配置项 {match.group(1)} 仍是示例占位符。请替换为真实值，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 仍是示例占位符。请替换为真实值。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be a boolean", detail)
     if match:
         return (
-            f"配置项 {match.group(1)} 的值无效。请使用 true、false、1 或 0，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 的值无效。请使用 true、false、1 或 0。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be an integer", detail)
     if match:
         return (
-            f"配置项 {match.group(1)} 的值无效，必须是整数。请参考 .env.example 修正，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 的值无效，必须是整数。请参考 .env.example 修正。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be a number", detail)
     if match:
         return (
-            f"配置项 {match.group(1)} 的值无效，必须是数字。请参考 .env.example 修正，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 的值无效，必须是数字。请参考 .env.example 修正。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be finite", detail)
     if match:
         return (
-            f"配置项 {match.group(1)} 不能是无穷大或 NaN。请参考 .env.example 修正，"
-            "然后重新运行: uv run llm-ocs-bridge check"
+            f"配置项 {match.group(1)} 不能是无穷大或 NaN。请参考 .env.example 修正。"
         )
 
     match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be (.+)", detail)
     if match:
         return (
             f"配置项 {match.group(1)} 的值超出允许范围：{match.group(2)}。"
-            "请参考 .env.example 修正，然后重新运行: uv run llm-ocs-bridge check"
+            "请参考 .env.example 修正。"
         )
 
     return detail

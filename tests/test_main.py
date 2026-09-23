@@ -331,7 +331,7 @@ def test_check_explains_llm_auth_failure(settings, tmp_path, monkeypatch, capsys
     assert "LLM HTTP 401" not in captured.err
     assert "OpenAI 认证失败（HTTP 401）" in captured.err
     assert "OPENAI_API_KEY" in captured.err
-    assert "uv run llm-ocs-bridge check" in captured.err
+    assert "uv run llm-ocs-bridge check" not in captured.err
 
 
 def test_check_explains_exa_auth_failure(settings, tmp_path, monkeypatch, capsys):
