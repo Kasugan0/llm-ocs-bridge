@@ -228,7 +228,8 @@ def test_check_reports_invalid_configuration(tmp_path, monkeypatch, capsys):
     assert asyncio.run(main_module._check()) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "PORT must be an integer" in captured.err
+    assert "配置项 PORT 的值无效，必须是整数" in captured.err
+    assert "参考 .env.example" in captured.err
 
 
 def test_check_outputs_importable_ocs_config(settings, tmp_path, monkeypatch, capsys):
@@ -310,6 +311,67 @@ def test_check_redacts_provider_errors(settings, tmp_path, monkeypatch, capsys):
     assert captured.out == ""
     assert "sk-secret-value" not in captured.err
     assert "[REDACTED]" in captured.err
+
+
+def test_check_explains_llm_auth_failure(settings, tmp_path, monkeypatch, capsys):
+    from llm_ocs_bridge.llm import ProviderProtocolError
+
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def check_llm(_settings):
+        raise ProviderProtocolError("LLM HTTP 401")
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 1
+    captured = capsys.readouterr()
+    assert "LLM HTTP 401" not in captured.err
+    assert "OpenAI 认证失败（HTTP 401）" in captured.err
+    assert "OPENAI_API_KEY" in captured.err
+    assert "uv run llm-ocs-bridge check" in captured.err
+
+
+def test_check_explains_exa_auth_failure(settings, tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    settings = replace(settings, exa_api_key="test-exa-key")
+
+    async def check_llm(_settings):
+        return None
+
+    async def check_exa(_settings):
+        raise ValueError("Request failed with status code 401: invalid key")
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    monkeypatch.setattr(main_module, "_check_exa", check_exa)
+    assert asyncio.run(main_module._check()) == 1
+    captured = capsys.readouterr()
+    assert "Exa 认证失败（HTTP 401）" in captured.err
+    assert "EXA_API_KEY" in captured.err
+    assert "invalid key" not in captured.err
+
+
+def test_check_explains_provider_timeout(settings, tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def check_llm(_settings):
+        raise TimeoutError
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 1
+    captured = capsys.readouterr()
+    assert "OpenAI 请求超时" in captured.err
+    assert "网络连接、代理和服务地址" in captured.err
 
 
 @pytest.mark.parametrize(
