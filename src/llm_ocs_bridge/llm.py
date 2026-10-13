@@ -234,22 +234,21 @@ def format_search_context(
         return ""
 
     chunks: list[bytes] = []
-    used_bytes = 0
+    used = 0
     for index, item in enumerate(results, start=1):
-        prefix = "\n\n" if chunks else ""
-        piece = "\n".join(
+        separator = b"\n\n" if chunks else b""
+        piece = separator + "\n".join(
             filter(None, (f"[{index}] {item.title}", item.url, item.snippet))
-        )
-        remaining = None if max_bytes is None else max_bytes - used_bytes
-        candidate = (prefix + piece)[:remaining].encode("utf-8")
-        remaining = len(candidate) if remaining is None else remaining
-        if remaining <= len(prefix):
+        ).encode()
+        if max_bytes is not None and used + len(piece) > max_bytes:
+            room = max_bytes - used
+            if room <= len(separator):
+                break
+            chunks.append(piece[:room])
             break
-        chunks.append(candidate[:remaining])
-        used_bytes += len(chunks[-1])
-        if remaining < len(candidate):
-            break
-    return b"".join(chunks).decode("utf-8", errors="ignore")
+        chunks.append(piece)
+        used += len(piece)
+    return b"".join(chunks).decode(errors="ignore")
 
 
 def normalize_answer_payload(payload: object, question_type: str) -> str:

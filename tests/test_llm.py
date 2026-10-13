@@ -41,6 +41,15 @@ def test_format_context_matches_full_encoding_at_utf8_boundaries():
     assert format_search_context(results) == full.decode("utf-8")
 
 
+def test_format_context_counts_utf8_bytes_not_characters():
+    from llm_ocs_bridge.llm import format_search_context
+    from llm_ocs_bridge.models import SearchResult
+
+    context = format_search_context([SearchResult("中文")], max_bytes=7)
+
+    assert len(context.encode("utf-8")) <= 7
+
+
 def test_parse_payload_markdown_fence():
     raw = '```json\n{"answer": "A"}\n```'
     parsed = LLMAnswerer._parse_payload(raw)
