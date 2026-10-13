@@ -29,11 +29,10 @@ def normalize_query(
 
 
 def format_options_for_prompt(options: Sequence[str]) -> str:
-    formatted: list[str] = []
-    for index, option in enumerate(options):
-        match = _OPTION_LABEL_RE.match(option)
-        label = match.group(1).upper() if match else chr(ord("A") + index)
-        text = strip_option_label(option) if match else option
+    labels = _option_labels(options)
+    formatted = []
+    for option, label in zip(options, labels, strict=True):
+        text = strip_option_label(option) if _OPTION_LABEL_RE.match(option) else option
         formatted.append(f"{label}.{text}")
     return "#".join(formatted)
 
@@ -55,12 +54,30 @@ def _split_options(options: str | Sequence[str]) -> tuple[str, ...]:
 
 
 def allowed_option_labels(options: Sequence[str]) -> frozenset[str]:
-    labels: set[str] = set()
-    for index, option in enumerate(options):
-        match = _OPTION_LABEL_RE.match(option)
-        label = match.group(1).upper() if match else chr(ord("A") + index)
-        labels.add(label)
-    return frozenset(labels)
+    return frozenset(_option_labels(options))
+
+
+def _option_labels(options: Sequence[str]) -> list[str]:
+    explicit = [
+        match.group(1).upper() if (match := _OPTION_LABEL_RE.match(option)) else ""
+        for option in options
+    ]
+    used = {label for label in explicit if label}
+    labels: list[str] = []
+    for index, label in enumerate(explicit):
+        if not label:
+            label = _free_label(index, used)
+            used.add(label)
+        labels.append(label)
+    return labels
+
+
+def _free_label(start: int, used: set[str]) -> str:
+    for offset in range(8):
+        label = chr(ord("A") + (start + offset) % 8)
+        if label not in used:
+            return label
+    raise QuestionError("选项数量超过限制")
 
 
 def strip_option_label(option: str) -> str:

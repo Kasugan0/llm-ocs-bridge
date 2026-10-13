@@ -55,6 +55,11 @@ def test_format_options_for_prompt_adds_missing_labels():
     )
 
 
+def test_unlabeled_option_avoids_an_explicit_label():
+    assert format_options_for_prompt(("Apple", "A.答案")) == "B.Apple#A.答案"
+    assert allowed_option_labels(("Apple", "A.答案")) == {"A", "B"}
+
+
 def test_option_labels_require_boundaries_and_follow_positions():
     assert allowed_option_labels(("Apple", "Banana")) == {"A", "B"}
     assert allowed_option_labels(("A.苹果", "B:香蕉")) == {"A", "B"}
