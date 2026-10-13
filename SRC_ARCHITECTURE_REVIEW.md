@@ -2233,7 +2233,26 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 
 有一条边界值得记下，但不升格为缺陷：`LLMAnswerer.answer` 的重试退避不读取 `answer_timeout_seconds`。按 `.env.example` 的 `MAX_LLM_RETRIES=2`、`LLM_RETRY_BACKOFF_SECONDS=0.5`、`LLM_TIMEOUT_SECONDS=30`、`ANSWER_TIMEOUT_SECONDS=120` 计算，4 次尝试加三次退避的最坏耗时是 123.5 秒，比答题截止多 3.5 秒。多出来的部分会被 `service` 层的 `asyncio.timeout` 取消，不会无限跑下去，只是取消发生在退避睡眠或下一次请求中途，已消耗的上游调用不产生答案。这是预算分配偏松，不是错误分类或重试次数错误。
 
-另一条同样不升格：`ExaSearch.search` 用 `asyncio.timeout(exa_timeout_seconds)` 包住调用，而 `AsyncExa` 客户端自身的 `timeout` 固定 600 秒。`asyncio.timeout` 取消的是协程，不保证底层 httpx 连接立刻回收。取消发生在响应体读取期间时，连接可能挂到 SDK 的 600 秒超时。本次只核对了两个超时值的来源，没有在运行中验证 socket 回收时序，所以记为未验证而不是缺陷。
+另一条是上游错误响应的连接复用，见本段末尾，结论是失败调用会丢弃连接。
+
+**P3 · 上游返回 4xx/5xx 时连接被丢弃，不回池。** `_call_model`（`llm.py:109`）用 `client.stream()` 发请求，在读任何响应体之前就 `response.raise_for_status()`（`llm.py:123`）。4xx/5xx 时 `HTTPStatusError` 从 `async with` 内部抛出，`stream()` 的 `finally` 随即 `response.aclose()`，响应体一个字节都没读。
+
+httpcore 1.0.9 的 `AsyncHTTP11Connection._response_closed`（`httpcore/_async/http11.py:238`）只在双方 h11 状态都是 `DONE` 时把连接置回 `IDLE` 并 `start_next_cycle()`，否则直接 `aclose()` 关掉套接字。响应体没读完时对方停在 `SEND_BODY`，条件不满足，连接被标 `CLOSED`，下一次 `_assign_requests_to_connections` 把它移出池子。每次失败的上游调用都新建一条 TCP 连接，成功调用则正常复用。
+
+实测，对 `https://api.openai.com/v1/chat/completions` 发无效 key 拿 401，响应头是 `Connection: keep-alive`，走 `127.0.0.1:7890` 的 CONNECT 隧道：
+
+- 先 `await response.aread()` 再关闭：两次请求的套接字 id 相同，关闭后 h11 为 `(IDLE, IDLE)`，连接回到池里。
+- 复刻 `_call_model`，不读体直接 `raise_for_status()`：收到响应头时 h11 为 `(DONE, SEND_BODY)`，关闭后池子把该连接记为 `is_closed=True` 移除，三次请求是三个不同的套接字。
+
+直连一台 `Connection: keep-alive` 的本地服务器得到同样的分界，所以这不是代理的行为，是没读完响应体。
+
+触发面受重试封顶。`answer` 对 429 和 5xx 最多重试 `max_llm_retries` 次（默认 2，共 3 次调用），其余 4xx 直接抛 `ProviderProtocolError` 不重试。每次失败新建一条连接，最坏是几次 TCP 加 TLS 握手，不会累积，也解释不了持续的连接增长。它发生在本来就要付一次上游往返的失败路径上，省下的是下一次调用的握手，不是这一次。
+
+**已修复。** `response.raise_for_status()` 移到 `aiter_bytes()` 之后（`llm.py:137`）。响应体先按 `max_llm_response_bytes` 读完并截断，再检查状态码，错误响应体读完即丢弃。这样对方也走到 `DONE`，`_response_closed` 把连接放回池里。`Content-Length` 超限的判断仍在读体之前，那种响应本来就超过上限，不值得为复用去读。
+
+`tests/test_llm.py` 的 `test_error_status_reuses_the_connection` 起一个返回 401 且 `Connection: keep-alive` 的本地服务器，用真实 httpx 客户端（`trust_env=False`，避开环境里的代理）连续两次走 `_call_model`。两次都抛 `ProviderProtocolError`，且两次取到的池中套接字是同一个，断言连接被复用而不是重建。
+
+**已核实，不成立。** 「`asyncio.timeout` 取消后 Exa 连接挂到 SDK 的 600 秒超时」这条边界，经核对 httpcore 的关闭路径后不再成立。`AsyncExa` 用 httpx，而 httpx 的 `stream()` 在退出时无条件 `response.aclose()`，`PoolByteStream.aclose` 又包在 `AsyncShieldCancellation` 里，取消不会跳过关闭。关闭时只要响应体没读完，`_response_closed` 就走 `aclose()` 直接关套接字，不存在「连接还在池里挂着等 600 秒」的状态。取消的代价是这一条连接被丢弃而不是复用，和上面的 4xx 是同一个机制，不是泄漏。
 
 ### 24.8 配置与 CLI
 
@@ -2293,10 +2312,11 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 
 - 关闭中的请求不再抛 `RuntimeError` 穿透 `search` 变成 HTTP 500。`_answer_request` 在 `runtime._closing` 时返回 `AnswerResult(error="服务正在关闭")`，与「服务繁忙」一样走 `code: 0`。`test_request_during_close_returns_ocs_error` 覆盖，并断言没有发出模型调用。
 - 选项标签不再冲突。`questions._option_labels` 先收集显式标签，再给缺标签的项分配第一个未占用的字母。`("Apple", "A.答案")` 以前会变成两个 `A` 然后被 `validate_query` 拒绝，现在是 `B` 和 `A`。`test_unlabeled_option_avoids_an_explicit_label` 覆盖。
+- 上游 4xx/5xx 不再丢弃连接。`_call_model` 先读完响应体再 `raise_for_status()`，错误响应也让 h11 走到 `DONE`，连接回池。`test_error_status_reuses_the_connection` 用真实 httpx 客户端对本地 401 服务器打两次，断言池中套接字相同，见 24.7。
 
 历史缺陷经复核均不成立：中文分词、highlights 截断、零阈值绕过、`DEBUG=true` 退出、字节预算按字符计，都已在当前代码中修正。
 
-未验证项：真实 OCS 浏览器插件的导入、取题和回填；Exa SDK 600 秒超时与 `asyncio.timeout` 取消之间的 socket 回收时序；本轮未调用付费上游，不更新 23.5 的真实 API 记录。GET 请求里 `#` 作为 query 分隔符与选项分隔符冲突，OCS 配置本身使用 POST，未改解析，只记在这里。
+未验证项：真实 OCS 浏览器插件的导入、取题和回填。Exa SDK 600 秒超时与 `asyncio.timeout` 取消之间的 socket 回收已在 24.7 核实，取消会关掉套接字而不是挂住。本轮未调用付费上游，不更新 23.5 的真实 API 记录。GET 请求里 `#` 作为 query 分隔符与选项分隔符冲突，OCS 配置本身使用 POST，未改解析，只记在这里。
 
 ### 24.11 入口与题目解析
 
