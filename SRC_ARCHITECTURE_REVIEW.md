@@ -2117,3 +2117,225 @@ Context7查询没有给出针对该主题的有效解释；通过`curl`读取官
 剩余限制：覆盖率不是断言充分性的证明；仍未验证真实OCS浏览器插件导入、页面取题及回填，也不以常识题答对证明模型因果上依赖检索证据。未覆盖的CLI/LLM/文件系统出口保留在JSON/HTML报告，不为凑100%增加不现实的磁盘故障测试。
 
 材料：`/home/yiming/.cache/ocs-coverage-audit/implementation-baseline.json`、`remediation-coverage/`、`postfix-first-coverage.json`、`remediation-coverage-final/`、`remediation-mutations/*/result.log`、`e2e-verdict-red.log`、`e2e-cache-verdict-red.log`和`storage-permission-race-red.log`，以及23.5节的真实API原始记录与离线判定结果。代码按职责以无签名、带scope英文Conventional Commits原子提交，不改永久签名配置、不推送。
+
+## 24. 全链路复审（2026-10-13）
+
+审阅日期：2026-10-13，Asia/Shanghai。基线为第23节记录的 `fc54fde`。本节只追加，不改写历史结论；本节之前的覆盖数字与提交记录均对应其各自快照，不代表当前树。
+
+### 24.1 自上次审阅以来的代码变更
+
+`fc54fde..HEAD` 只改了两个运行时模块，其余 11 个模块字节级未变：
+
+| 提交 | 变更 | 本轮核实 |
+| --- | --- | --- |
+| `7d3e85d` `fix(cli): explain check failures` | `main.py` 新增 `_http_status`、`_provider_error`、`_configuration_error`，`_check` 按阶段把异常翻译成可操作的中文诊断 | 翻译表与 `config.py` 实际抛出的错误文本一一对应，见 24.4 |
+| `15c5d4b` `refactor(cli): shorten check diagnostics` | 同上一批诊断的文案压缩 | 未改变分支结构 |
+| `2a2c14c` `refactor(llm): count search context in utf-8 bytes` | `llm.format_search_context` 改为按 UTF-8 字节累计，替换原先先按字符切片再编码的算法 | 见 24.3，这是一处真实的正确性修复 |
+| `b83ef33` `test(service): cover concurrent fallback coalescing` | 仅测试：8 并发 fallback 共享一次模型调用、搜索不可用时的等待者限额、搜索未命中后的 fallback 合并 | 只读测试，不改变运行时 |
+
+`a6bc2a5` 只新增 `AUDIT_REPORT_DUBO.md`，记录对不存在的 `dubo` 分支的审计阻塞，不涉及运行时代码。
+
+### 24.2 当前验证
+
+在工作区干净的 `HEAD` 上执行：
+
+- `uv run --frozen pytest`：**317 passed**，42.62 秒，仅既有的 Starlette `TestClient`/HTTPX 弃用警告。比第23节的 310 项多 7 项，全部来自上述新增测试。
+- `uv run --frozen ruff check src tests pyproject.toml`：通过。
+- `uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py`：通过。
+- `uv run --frozen python tests/run_coverage.py`：采集本身 317 passed、67.78 秒，但**门槛检查返回非零**。这不是采集失败，见 24.5。
+
+本轮没有调用付费上游，没有读取或修改 `.env`，没有触碰真实数据库。
+
+### 24.3 `format_search_context` 的字节计数
+
+定位 `src/llm_ocs_bridge/llm.py` 的 `format_search_context`。旧实现先把拼接后的字符串按字符数切片，再对切片结果做 `.encode("utf-8")`，用编码后的长度去累加 `used_bytes`。字符切片长度与 UTF-8 字节长度只在纯 ASCII 时相等，所以只要证据里出现中文或 URL 百分号转义以外的多字节字符，实际写入上下文的字节数就会小于 `max_bytes` 的剩余额度：一段 3 字节的中文字符被当成 1 个名额扣掉，后续证据被提前截断。
+
+新实现先把分隔符和条目整体编码成 `bytes`，再用 `len(piece)` 与剩余额度比较，截断也落在字节边界上，最后一次性 `decode(errors="ignore")`。截断点因此严格受 `MAX_EVIDENCE_BYTES` 约束，不再因字符宽度丢弃本可以放下的证据。`tests/test_llm.py` 增加了对应断言。这是行为收紧，不是重构噪音。
+
+旧实现还有一个隐藏的方向性错误：`remaining` 先取字符额度再被覆盖成字节长度，两个同名含义前后不一。新代码去掉了这个复用，读起来不再需要推断单位。
+
+### 24.4 `check` 诊断映射
+
+`_configuration_error` 用 `re.fullmatch` 逐条匹配 `config.py` 抛出的英文错误。核对 `config.py` 的全部 `raise RuntimeError`：`is required`、`still uses the example placeholder`、`must be a boolean`、`must be an integer`、`must be a number`、`must be finite`、`must be {range}`、以及 fallback 关闭时的 `EXA_API_KEY` 专用消息，每种都有对应的中文分支，没有一条配置错误会掉进末尾的原文回退。这点是好的。
+
+`_provider_error` 先按异常类型分档（`MissingKeyError`、`ResponseTooLargeError`、`InvalidAnswerError`、`TransientLLMError`、`ProviderProtocolError`），再用 `_http_status` 取状态码。状态码有两个来源：异常对象的 `response.status_code` 属性，以及从 `str(exc)` 里匹配 `(?:HTTP|status code)\s*[:=]?\s*(\d{3})`。异常链通过 `__cause__`/`__context__` 逐层向上找，并用 `id` 集合防止循环链死循环。
+
+测试只锁住了其中三条路径：`tests/test_main.py` 的 `test_check_explains_llm_auth_failure`（401）、`test_check_explains_exa_auth_failure`（401）和 `test_check_explains_provider_timeout`（`TimeoutError`）。403、400、404、429、408/504、5xx、其他状态码、`TransientLLMError`、`ProviderProtocolError` 以及全部配置错误分支都没有断言。覆盖率也证实了这一点，见 24.5。
+
+这里的风险不在于文案，而在于 `_http_status` 的正则没有上界。`status code 401` 这种 Exa/OpenAI SDK 的真实格式能命中是对的，但同一个模式也会命中任何包含这三个字母加三位数字的文本。`_check_llm` 发的是固定题目「一加一等于几？」，模型如果把题目或数字回显进错误消息，一段无关的 `HTTP 200` 描述就可能被当成状态码，从而给出一条指向错误配置项的诊断。当前没有测试约束这个边界。判定为测试缺口，不判定为缺陷：现有调用方的异常文本都是短消息，没有观察到实际误判。
+
+### 24.5 覆盖率门槛
+
+`tests/run_coverage.py` 的门槛按比值比较：`LINE_BASELINE = Fraction(1257, 1312)`、`BRANCH_BASELINE = Fraction(342, 386)`。本轮采集的真实数字是：
+
+- 行覆盖：**1316/1395 = 94.34%**，基线比值为 95.81%。
+- 分支覆盖：**374/442 = 84.62%**，基线比值为 88.60%。
+- 合并覆盖 92.00%，同样不是行覆盖率。
+
+绝对覆盖数都增加了（行 +59、分支 +32），但新增代码的覆盖比例低于基线比例，所以 `Fraction(count, size) < baseline` 成立，门槛返回非零并打印两行 `is below`。
+
+门槛消息里的 `171/193` 不是另一套基线。`Fraction` 构造时会约分，`342/386` 与 `171/193` 是同一个值，消息只是打印了约分后的形式。已在当前解释器里复算确认：导入的 `BRANCH_BASELINE` 显示为 `171/193`，而源码文本里没有任何 `171`。不要据此去改基线常量。
+
+未覆盖行按模块（缺失行数 / 可执行行数）：
+
+| 模块 | 行覆盖 | 未覆盖行 | 性质 |
+| --- | --- | --- | --- |
+| `main` | 197/234 = 84.19% | 37 | 绝大部分是 24.4 的诊断分支，真实缺口 |
+| `llm` | 192/208 = 92.31% | 16 | 判断题布尔/`true`/`false`、填空数组元素校验、空题型输出规则等归一化分支 |
+| `service` | 174/177 | 3 | 个别异常出口 |
+| `cache` | 88/92 | 4 | 个别异常出口 |
+| `config` | 116/123 | 7 | 解析失败出口 |
+| `storage` | 162/166 | 4 | 异常出口 |
+| `search` | 128/132 | 4 | 异常出口 |
+| `questions` | 78/80 | 2 | 边界出口 |
+| `app` | 108/109 | 1 | 单行出口 |
+| `models` | 22/23 | 1 | 单行出口 |
+| `metrics`、`utils`、`__init__` | 100% | 0 | — |
+
+行号取自 `~/.cache/llm-ocs-bridge/coverage/coverage.json` 的 `missing_lines`。本轮不把这些未覆盖出口逐条升格为缺陷：其中多数是异常路径，按第23节的结论不为凑满覆盖率去堆磁盘故障测试。但 `main.py` 的诊断映射是新增的用户可见行为，它的未覆盖不是异常出口而是普通分支，应当补测试而不是抬高门槛或排除。
+
+门槛按比值而不是按绝对数比较，是这次失败的直接原因。新增任何覆盖比例低于 95.81% 的代码都会让门槛失败，即使总覆盖数上升。这是门槛的设计选择，本轮不改它；如果要让门槛重新通过，正确做法是给 24.4 的诊断分支补断言，而不是下调 `LINE_BASELINE`。
+
+### 24.6 持久化层：取消赶不上已入队的 COMMIT
+
+**P2 · 已复现。** 定位 `src/llm_ocs_bridge/storage.py:124` 的 `_transaction`。
+
+事务的取消防护是一个 authorizer 回调：当 `cancelled` 事件已置位且当前语句是 `COMMIT` 时返回 `SQLITE_DENY`，否则放行。`cancelled.set()` 写在 `except BaseException` 分支里，也就是 `await db.commit()` 抛出之后。
+
+这个顺序假设「`commit()` 被取消」等价于「`COMMIT` 还没执行」。aiosqlite 0.22.1 不满足这个假设。`Connection._execute`（`.venv/.../aiosqlite/core.py:150`）先 `self._tx.put_nowait((future, function))` 把操作放进 worker 线程的队列，然后才 `return await future`。取消只取消这个 future，不会把已经入队的函数撤出来。worker 线程（`core.py:48` 的 `_connection_worker_thread`）从队列取出函数后直接调用，不检查 future 是否还活着。
+
+于是存在一个窗口：`commit` 已经入队，worker 还没取到它，调用方被取消。`except` 分支里的 `cancelled.set()` 发生在 worker 执行 `COMMIT` 之前或之后都不确定。如果 worker 先执行，authorizer 看到的 `cancelled` 仍是未置位，`COMMIT` 正常通过；随后 `_rollback` 发的 `ROLLBACK` 作用在一个已经结束的事务上，是空操作。调用方拿到 `CancelledError`，以为写入没发生，数据却已落盘。
+
+这不是理论推演。用项目虚拟环境对 aiosqlite 0.22.1 直接验证：开一个事务插入一行，把 `Connection.commit` 换成一个先阻塞再调用真正 `commit` 的函数，等它进入阻塞后取消等待它的任务，再放行。结果是 `caller_saw_cancelled=True` 且回滚后 `SELECT` 仍返回那一行。探针放在 `/tmp/ocs-audit-probe/probe_commit_cancel.py`，不进入仓库，不触碰真实数据库。
+
+影响面：`incr` 不是幂等的，一次被取消的计数写入会让计数永久加一。缓存写入同理，调用方重试会再写一次，虽然结果相同但不等于「取消成功」。`write()` 的调用方无法区分「真的没写」和「写了但告诉我没写」。
+
+为什么现有测试没拦住：`tests/test_storage.py:273` 的 `test_cancelled_queued_commit_rolls_back` 在观察到 `commit` 即将入队时，先向队列插进一个 `pause_worker` 阻塞查询，再取消。这保证取消处理全程发生在 `COMMIT` 入队之前，authorizer 总能先看到 `cancelled`。它覆盖的是「赶在入队前取消」，不是「入队后、执行前取消」。`test_cancellation_after_commit_preserves_committed_write` 测的是提交完成之后的取消，行为相反，同样不覆盖这个窗口。
+
+修复方向应当是让取消标记在 `commit` 入队之前就可见，或者让 worker 侧在执行 `COMMIT` 前重新检查取消状态。不能靠在 `await db.commit()` 之后补 `cancelled.set()` 来补救，因为那时候语句可能已经执行完了。本轮只记录，不改代码。
+
+**已修复。** `_transaction` 不再把 `db.commit()` 直接交给 worker，而是提交一个 `commit_unless_cancelled`。它在 worker 线程上、在 `COMMIT` 之前执行：调用方任务已经 `cancelled()` 时重新抛出 `CancelledError`，`cancelled` 事件已置位时抛 `OperationalError`，两种情况都不执行 `db._conn.commit()`。authorizer 仍负责拦截入队前就取消的 `COMMIT`。调用方因此继续看到 `CancelledError`，而不是一个提交错误，写入也不会落盘。
+
+回归是 `tests/test_storage.py` 的 `test_cancelling_commit_already_handed_to_worker_rolls_back`。它把守卫函数包进 worker 队列，在守卫进入后、真正 `commit()` 之前暂停 worker，再取消调用方。修复前这个窗口会留下 `cancelled` 计数；修复后事务回滚，重开数据库计数仍不存在。原有的「入队前取消」和「提交完成后取消」两组测试保持原断言，分别继续证明回滚与保留。
+
+`tests/test_cache.py` 的 `test_metric_batch_commits_once` 和 `tests/test_service.py` 的 `test_live_search_batches_miss_and_request_counters` 原先通过 mock `connection.commit` 断言提交次数。提交不再走 `connection.commit`，两处改为统计 `_execute` 收到的 `commit_unless_cancelled` 次数，断言的次数不变。
+
+### 24.7 搜索与答案生成：复核后未发现新缺陷
+
+对 `search.py` 与 `llm.py` 的逐函数复核，历史问题均已不成立：
+
+- 中文连续文本不再被当成单个 token。`search.py` 的 `_extract_terms` 对长度大于 1 的连续汉字做二字滑动窗口，再减停用词。
+- highlights 不再只保留第一段。`_map_results` 用换行拼接全部非空字符串。
+- 零重叠证据不会被零阈值绕过。过滤条件是 `relevance > 0`，`score_results` 对平均语义分为 0 的结果直接返回 0，与 `min_search_quality_score` 取值无关。
+- Exa `Result` 缺字段不会在映射处抛异常。当前 SDK 用 `.get` 给 `title`、`highlights`、`published_date` 默认值，映射侧还对 `highlights` 做了类型过滤。
+- 不可信内容不进 system 消息。`_build_messages` 的 system 只放固定规则，题目、选项、证据和上次无效响应都放进 user JSON。
+- 上游响应体不回传。错误只带状态码和固定中文，脱敏逻辑不在这两个文件的返回路径上。
+
+有一条边界值得记下，但不升格为缺陷：`LLMAnswerer.answer` 的重试退避不读取 `answer_timeout_seconds`。按 `.env.example` 的 `MAX_LLM_RETRIES=2`、`LLM_RETRY_BACKOFF_SECONDS=0.5`、`LLM_TIMEOUT_SECONDS=30`、`ANSWER_TIMEOUT_SECONDS=120` 计算，4 次尝试加三次退避的最坏耗时是 123.5 秒，比答题截止多 3.5 秒。多出来的部分会被 `service` 层的 `asyncio.timeout` 取消，不会无限跑下去，只是取消发生在退避睡眠或下一次请求中途，已消耗的上游调用不产生答案。这是预算分配偏松，不是错误分类或重试次数错误。
+
+另一条同样不升格：`ExaSearch.search` 用 `asyncio.timeout(exa_timeout_seconds)` 包住调用，而 `AsyncExa` 客户端自身的 `timeout` 固定 600 秒。`asyncio.timeout` 取消的是协程，不保证底层 httpx 连接立刻回收。取消发生在响应体读取期间时，连接可能挂到 SDK 的 600 秒超时。本次只核对了两个超时值的来源，没有在运行中验证 socket 回收时序，所以记为未验证而不是缺陷。
+
+### 24.8 配置与 CLI
+
+`DEBUG=true` 导致启动退出的历史缺陷不成立。`main.py` 的 `run` 用 import string 加 `factory=True` 交给 uvicorn，`reload=settings.debug`，`tests/test_main.py` 有子进程实测覆盖。默认监听地址仍是 `127.0.0.1`，`HOST` 只是显式覆盖。
+
+`check` 与普通启动读取 `.env` 的方式不一致，这是本轮确认的问题。
+
+**P2 · `check` 拒绝的 `.env` 仍会被普通启动使用。** `_check_env_file`（`main.py:117`）要求 cwd 下的 `.env` 存在、是普通文件、可读、POSIX 权限恰好 `0600`，但只有 `_check`（`main.py:407`）调用它。启动和 `clear-cache` 走 `_load_settings()`（`main.py:466`）和 `load_storage_settings()`，都不传路径。`config.py:141` 的 `_environment` 在没有显式 `environ` 时直接 `dotenv_values(Path.cwd() / ".env")`，不检查权限。
+
+触发：cwd 放一个 `0644` 的 `.env`，同时用进程环境变量补齐一套合法配置，执行 `llm-ocs-bridge` 而不是 `check`。`check` 会以「权限必须为 0600」失败，服务本身照常启动。如果环境变量没有覆盖文件里的 `ACCESS_TOKEN`，运行中的 token 就来自一份 `check` 明确拒绝的文件。两条路径对同一份文件给出相反的结论。
+
+**已修复。** 权限检查从 `main._check_env_file` 下沉到 `config._environment`（`config.py:137`）。只要真正去读 `.env`，启动、`clear-cache` 和 `check` 都先过 `_require_private_env_file`，POSIX 上权限不是 `0600` 就抛 `RuntimeError`。文件不存在时仍退回进程环境变量，不凭空制造一份配置要求。显式传入 `environ` 的调用方不读文件，也不受这条约束，测试注入因此保持不变。
+
+`tests/test_config_loading.py` 的 `test_load_rejects_env_file_with_loose_permissions` 断言 `0644` 直接拒绝。`tests/test_main.py` 的 `test_startup_rejects_insecure_env_file` 和 `test_clear_cache_rejects_insecure_env_file` 走 `run()`，两条命令都以退出码 1 结束并说明权限要求。
+
+**P2 · 启动失败的诊断没有接上 `check` 的翻译。** `_configuration_error`（`main.py:347`）能把七种配置错误模板翻成带配置项名和位置的中文，但只有 `_check` 用它。启动和 `clear-cache` 的失败走 `_exit_with_config_error`（`main.py:444`），直接打印 `f"配置错误: {exc}"`。`PORT=abc` 时 stderr 只有 `配置错误: PORT must be an integer`，然后让用户去跑 `check`。`7d3e85d` 声称的「指出缺失项与位置」只覆盖了 `check` 子命令，服务启动这条更常用的失败路径没有接上。
+
+**已修复。** `_exit_with_config_error` 先把异常交给 `_configuration_error` 再输出，启动和 `clear-cache` 与 `check` 共用同一张翻译表。新增的权限错误以「配置文件权限必须为 0600」开头，翻译表对它原样返回。`test_startup_explains_invalid_configuration` 用 `PORT=abc` 走 `run([])`，断言 stderr 含「配置项 PORT 的值无效，必须是整数」。
+
+诊断映射原先只有 401 和 `TimeoutError` 两条断言。`test_check_explains_provider_status` 覆盖 400、403、404、408、418、429、503、504，`test_check_explains_llm_error_types` 覆盖五类 LLM 异常，`test_configuration_error_names_the_setting` 覆盖七种配置模板加权限错误。覆盖率门槛因此重新通过，见 24.13。
+
+两条 P3 记下但不作为缺陷：
+
+- `MAX_ACTIVE_ANSWERS`、`MAX_ANSWER_WAITERS`、`ANSWER_TIMEOUT_SECONDS` 的默认值写死在 `load_settings`（`config.py:160`）里，不在 `.env` 中。不设置它们也能启动，但 `check` 的「配置格式与必填项 OK」不会说明这三个值来自代码。`load_storage_settings` 不享受这套默认值，`MAX_CACHE_BYTES` 缺失会直接失败。这是诊断不完整，不是错误行为。
+- `check` 成功时 stdout 的 OCS JSON 含 `X-Access-Token` 明文（`main.py:207`）。stderr 有「不要提交」的提示（`main.py:112`），但这不是脱敏。OpenAI 和 Exa 的密钥不在这份 JSON 里。这是该命令的既定用途，记为边界而不是缺陷。
+
+本段没有运行 `check` 或启动服务，结论全部来自调用点核对。
+
+### 24.9 请求编排
+
+`service.py` 的合并、隔离和缓存优先级经核对是对的，不重复展开。取消一个等待者不会取消共享任务，`asyncio.shield` 在 `service.py:281` 的等待点上，`tests/test_service.py:174` 覆盖。search 答案缓存优先于搜索，fallback 答案缓存只在确认无证据之后才查，搜索恢复后不会被旧的 fallback 缓存挡住。合并键与缓存键都是 search 模式的 `answer_key`，不存在返回另一题答案的竞态。`b83ef33` 新增的三个测试把 fallback 路径的合并和等待者限额也锁住了。
+
+三条候选里只有一条成立。
+
+**P3 · 外层超时不计数。** `answer`（`service.py:296`）和 `_answer_deadline`（`service.py:243`）套的是同一个 `expires`，但记录超时的代码只在内层。内层 `except TimeoutError` 会 `log_error("service", "AnswerTimeout", ...)`（`service.py:253`），外层的 `except TimeoutError`（`service.py:304`）只返回「答题超时」，不计数也不落错误日志。
+
+触发：超时落在共享任务的 `timeout_at` 进入之前，例如 `_answer_request` 里的 `answer_cache.get`（`service.py:264`）或 `metrics.incr`（`service.py:97`）上，或者内层已经返回但等待者还堵在 `shield` 上。两种情况下调用方拿到的错误文本与内层超时完全相同，指标却少一条。同一个超时事件因此取决于它落在哪一层而决定是否被记录。这不影响答案正确性，只影响 `AnswerTimeout` 的可观测性。
+
+**已修复。** `answer` 的外层 `except TimeoutError` 在共享任务还没建立时补记一次 `AnswerTimeout`。共享任务已经存在时不补，因为内层 `_answer_deadline` 会记，两次都记会让同一次超时变成两条。`test_answer_deadline_includes_initial_cache_wait` 把 `answer_cache.get` 卡住直到超时，断言错误日志里恰好一条 `AnswerTimeout`；`test_shared_answer_timeout_is_not_reset_by_late_waiters` 继续断言内层超时也是一条，证明没有双计。
+
+另外两条核对后不成立：
+
+- 「全部等待者取消后共享任务继续跑完」是真实现象，但 `tests/test_service.py:201` 的 `test_answer_finishes_after_all_waiters_cancel` 把它作为预期断言。任务会跑完搜索和 LLM 重试、写缓存，并占用一个 `max_active_answers` 名额直到自然结束。这是取消隔离的代价：`shield` 的定义就是取消不传播。要改成等待者归零即取消，会同时改变这个测试锁住的行为，属于产品决策而不是缺陷。
+- 「`aclose` 后任务仍访问已关闭的连接」不成立。`aclose`（`service.py:42`）先 `task.cancel()` 再 `await asyncio.gather(*tasks, return_exceptions=True)`，`gather` 会等待被取消任务的清理代码跑完才返回，然后 `AsyncExitStack` 才逆序释放 answerer、search、db。不存在关闭连接时任务还在飞的窗口。
+
+### 24.10 本轮结论
+
+24.6、24.8、24.9 记录的三处问题都已修复并有回归：
+
+1. **P2** 取消已入队但未执行的 `COMMIT` 会回滚，调用方仍收到 `CancelledError`。`commit_unless_cancelled` 在 worker 上先检查再提交。
+2. **P2** `.env` 权限检查下沉到 `config._environment`，启动、`clear-cache` 和 `check` 对同一份文件结论一致。启动失败的诊断走 `_configuration_error`。
+3. **P3** 答题超时落在外层 deadline 且共享任务尚未建立时补记 `AnswerTimeout`，已建立时不重复记。
+
+诊断映射的测试缺口已补，覆盖率门槛重新通过，见 24.13。
+
+复核后又修了两处：
+
+- 关闭中的请求不再抛 `RuntimeError` 穿透 `search` 变成 HTTP 500。`_answer_request` 在 `runtime._closing` 时返回 `AnswerResult(error="服务正在关闭")`，与「服务繁忙」一样走 `code: 0`。`test_request_during_close_returns_ocs_error` 覆盖，并断言没有发出模型调用。
+- 选项标签不再冲突。`questions._option_labels` 先收集显式标签，再给缺标签的项分配第一个未占用的字母。`("Apple", "A.答案")` 以前会变成两个 `A` 然后被 `validate_query` 拒绝，现在是 `B` 和 `A`。`test_unlabeled_option_avoids_an_explicit_label` 覆盖。
+
+历史缺陷经复核均不成立：中文分词、highlights 截断、零阈值绕过、`DEBUG=true` 退出、字节预算按字符计，都已在当前代码中修正。
+
+未验证项：真实 OCS 浏览器插件的导入、取题和回填；Exa SDK 600 秒超时与 `asyncio.timeout` 取消之间的 socket 回收时序；本轮未调用付费上游，不更新 23.5 的真实 API 记录。GET 请求里 `#` 作为 query 分隔符与选项分隔符冲突，OCS 配置本身使用 POST，未改解析，只记在这里。
+
+### 24.11 入口与题目解析
+
+`app.py` 和 `questions.py` 自 `fc54fde` 以来未改动，本轮逐函数复核，没有新增缺陷。
+
+- 鉴权只看 `X-Access-Token` 头。`_auth_ok`（`app.py:45`）用 `secrets.compare_digest` 比较字节串，`access_token` 为空时直接拒绝。query string 里的 token 不参与鉴权，因为 `search` 只调用 `_auth_ok`，不读 query 参数。
+- 请求体限制在读取阶段就生效。`_read_body`（`app.py:63`）对 GET 先序列化再量 UTF-8 字节，对 POST 先查 `Content-Length` 再逐 chunk 累加，超限抛 `RequestError`。非法、负数 `Content-Length`、非 UTF-8、非 JSON、JSON 数组都各自拒绝。这些路径由 `tests/test_request_boundaries.py` 覆盖。
+- 错误响应不泄露内部异常。`search`（`app.py:161`）只把 `RequestError` 和 `QuestionError` 的文本放进 `code: 0` 响应，其余异常不在这里捕获，由 FastAPI 变成 500，但不带上游响应体。
+- 题目解析拒绝类型错误。`_fields`（`questions.py:73`）要求题干和题型是字符串、选项是字符串或字符串数组，数组元素必须全是字符串。`validate_query`（`questions.py:100`）限制题干长度、选项数量和长度，题型只允许 `single`、`multiple`、`judgement`、`completion`，空题型按开放题处理。
+
+`app.py:50` 和 `questions.py:50,52` 各有一到两行未覆盖，都是单个异常出口，不构成行为缺口。
+
+入口复核补了两处，修复见 24.10：关闭中的请求原来抛 `RuntimeError` 穿透 `search`，现在返回 `code: 0`；混合显式与缺省标签原来撞出重复字母，现在避开已占用的标签。
+
+### 24.12 逐模块覆盖状态
+
+13 个运行时模块本轮全部复核。24.10 列出的问题均已修复。
+
+| 模块 | 本轮结论 |
+| --- | --- |
+| `app` | 无新增缺陷，见 24.11 |
+| `questions` | 标签分配改为两遍，避开已占用字母，见 24.10 |
+| `service` | 外层超时补记且不双计；关闭中请求返回 `code: 0`，见 24.9、24.10 |
+| `search` | 历史问题已修，见 24.7 |
+| `llm` | 字节计数已修，见 24.3、24.7 |
+| `cache` | 键含全部影响结果的维度，读回校验在 `service` 层 |
+| `storage` | 取消窗口已封，见 24.6 |
+| `metrics` | 脱敏覆盖 JSON 与字典形式，计数口径与代码一致 |
+| `config` | 读 `.env` 时统一校验 `0600`，见 24.8 |
+| `main` | 启动与 `clear-cache` 的失败走同一张诊断表，见 24.8 |
+| `models` | 只是数据定义 |
+| `utils` | 脱敏与截断，100% 覆盖 |
+| `__init__` | 空文件 |
+
+### 24.13 修复后的验证
+
+- `uv run --frozen pytest`：346 passed，46.09 秒。比 24.2 的 317 项多 29 项，全部是本轮新增的回归。
+- `uv run --frozen ruff check src tests pyproject.toml`：通过。
+- `uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py`：通过。
+- `uv run --frozen python tests/run_coverage.py`：346 passed，75.42 秒，门槛通过。行覆盖 1373/1427（96.22%），分支覆盖 413/462（89.39%），都高于基线比值 1257/1312 与 342/386。绝对数和比例同时上升，24.5 记录的门槛失败不再存在。
+
+未覆盖的行仍是异常出口和 CLI 的 `check` 入口本身，不为凑满去补。本轮没有调用付费上游，没有读取或修改真实 `.env`。
