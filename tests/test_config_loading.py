@@ -1,6 +1,8 @@
 import os
 from dataclasses import is_dataclass
 
+import pytest
+
 
 def test_loading_is_explicit_and_repeatable(monkeypatch):
     from llm_ocs_bridge.config import Settings, load_settings
@@ -17,13 +19,26 @@ def test_load_uses_cwd_and_environment_priority(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("PORT")
-    (tmp_path / ".env").write_text("PORT=8123\n", encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text("PORT=8123\n", encoding="utf-8")
+    env_file.chmod(0o600)
     assert load_settings().port == 8123
     assert "PORT" not in os.environ
-    (tmp_path / ".env").write_text("PORT=8124\n", encoding="utf-8")
+    env_file.write_text("PORT=8124\n", encoding="utf-8")
     assert load_settings().port == 8124
     monkeypatch.setenv("PORT", "8125")
     assert load_settings().port == 8125
+
+
+def test_load_rejects_env_file_with_loose_permissions(tmp_path, monkeypatch):
+    from llm_ocs_bridge.config import load_settings
+
+    monkeypatch.chdir(tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text("PORT=8123\n", encoding="utf-8")
+    env_file.chmod(0o644)
+    with pytest.raises(RuntimeError, match="0600"):
+        load_settings()
 
 
 def test_storage_settings_ignore_invalid_llm_configuration(monkeypatch):

@@ -346,6 +346,8 @@ def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
 
 def _configuration_error(exc: Exception, max_bytes: int) -> str:
     detail = _safe_error(exc, max_bytes)
+    if detail.startswith("配置文件权限必须为 0600"):
+        return detail
     if detail == "EXA_API_KEY is required when LLM fallback is disabled":
         return (
             "已关闭 LLM fallback，因此必须配置 EXA_API_KEY。请在 .env 中填写密钥，"
@@ -442,7 +444,8 @@ async def _check() -> int:
 
 
 def _exit_with_config_error(parser: argparse.ArgumentParser, exc: RuntimeError) -> None:
-    parser.exit(1, f"配置错误: {exc}\n请运行 llm-ocs-bridge check 查看详情。\n")
+    message = _configuration_error(exc, 4096)
+    parser.exit(1, f"配置错误: {message}\n请运行 llm-ocs-bridge check 查看详情。\n")
 
 
 def run(argv: Sequence[str] | None = None) -> None:

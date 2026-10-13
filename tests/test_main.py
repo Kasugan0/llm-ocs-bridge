@@ -357,6 +357,52 @@ def test_check_explains_exa_auth_failure(settings, tmp_path, monkeypatch, capsys
     assert "invalid key" not in captured.err
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            "MissingKeyError",
+            "OpenAI API 密钥未配置",
+        ),
+        (
+            "ResponseTooLargeError",
+            "OpenAI 响应超过本地大小限制",
+        ),
+        (
+            "InvalidAnswerError",
+            "答案格式不符合项目要求",
+        ),
+        (
+            "TransientLLMError",
+            "OpenAI 暂时不可用",
+        ),
+        (
+            "ProviderProtocolError",
+            "OpenAI 返回了不兼容的响应",
+        ),
+    ],
+)
+def test_check_explains_llm_error_types(
+    settings, tmp_path, monkeypatch, capsys, error, expected
+):
+    import llm_ocs_bridge.llm as llm_module
+
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def check_llm(_settings):
+        raise getattr(llm_module, error)("raw detail")
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 1
+    captured = capsys.readouterr().err
+    assert expected in captured
+    assert "raw detail" not in captured
+
+
 def test_check_explains_provider_timeout(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -372,6 +418,63 @@ def test_check_explains_provider_timeout(settings, tmp_path, monkeypatch, capsys
     captured = capsys.readouterr()
     assert "OpenAI 请求超时" in captured.err
     assert "网络连接、代理和服务地址" in captured.err
+
+
+def _provider_failure(status):
+    error = RuntimeError(f"upstream failed with HTTP {status}")
+    error.response = type("Response", (), {"status_code": status})()
+    return error
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (_provider_failure(403), "访问被拒绝（HTTP 403）"),
+        (_provider_failure(400), "拒绝了请求参数（HTTP 400）"),
+        (_provider_failure(404), "接口或模型不存在（HTTP 404）"),
+        (_provider_failure(429), "请求过于频繁或账户配额不足（HTTP 429）"),
+        (_provider_failure(408), "请求超时（HTTP 408）"),
+        (_provider_failure(504), "请求超时（HTTP 504）"),
+        (_provider_failure(503), "服务暂时不可用（HTTP 503）"),
+        (_provider_failure(418), "返回 HTTP 418"),
+    ],
+)
+def test_check_explains_provider_status(
+    settings, tmp_path, monkeypatch, capsys, error, expected
+):
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def check_llm(_settings):
+        raise error
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 1
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "EXA_API_KEY is required when LLM fallback is disabled",
+            "已关闭 LLM fallback",
+        ),
+        ("ACCESS_TOKEN is required", "配置项 ACCESS_TOKEN 缺失"),
+        ("OPENAI_API_KEY still uses the example placeholder", "仍是示例占位符"),
+        ("DEBUG must be a boolean", "请使用 true、false、1 或 0"),
+        ("PORT must be an integer", "必须是整数"),
+        ("LLM_TIMEOUT_SECONDS must be a number", "必须是数字"),
+        ("MIN_SEARCH_QUALITY_SCORE must be finite", "不能是无穷大或 NaN"),
+        ("PORT must be between 1 and 65535", "超出允许范围"),
+        ("配置文件权限必须为 0600，当前为 0644: .env", "权限必须为 0600"),
+    ],
+)
+def test_configuration_error_names_the_setting(message, expected):
+    assert expected in main_module._configuration_error(RuntimeError(message), 4096)
 
 
 @pytest.mark.parametrize(
@@ -436,6 +539,35 @@ def test_clear_cache_ignores_invalid_llm_configuration(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "invalid")
     monkeypatch.setenv("OPENAI_API_KEY", "")
     main_module.run(["clear-cache", "--scope", "all"])
+
+
+def test_startup_explains_invalid_configuration(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PORT", "abc")
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.run([])
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "配置项 PORT 的值无效，必须是整数" in captured.err
+    assert "llm-ocs-bridge check" in captured.err
+
+
+def test_startup_rejects_insecure_env_file(tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path, 0o644)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.run([])
+    assert exc_info.value.code == 1
+    assert "权限必须为 0600" in capsys.readouterr().err
+
+
+def test_clear_cache_rejects_insecure_env_file(tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path, 0o644)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.run(["clear-cache", "--scope", "all"])
+    assert exc_info.value.code == 1
+    assert "权限必须为 0600" in capsys.readouterr().err
 
 
 def test_debug_server_starts_in_subprocess(tmp_path, monkeypatch):

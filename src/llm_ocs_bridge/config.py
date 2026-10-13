@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from math import isfinite
@@ -138,7 +139,18 @@ def _environment(
 ) -> Mapping[str, str | None]:
     if environ is not None:
         return environ
-    return {**dotenv_values(env_path or Path.cwd() / ".env"), **os.environ}
+    path = env_path or Path.cwd() / ".env"
+    if not path.exists():
+        return os.environ
+    _require_private_env_file(path)
+    return {**dotenv_values(path), **os.environ}
+
+
+def _require_private_env_file(path: Path) -> None:
+    if os.name == "posix":
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode != 0o600:
+            raise RuntimeError(f"配置文件权限必须为 0600，当前为 {mode:04o}: {path}")
 
 
 def load_storage_settings(
