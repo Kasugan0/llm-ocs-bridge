@@ -120,7 +120,6 @@ class LLMAnswerer:
                     "max_tokens": self.settings.max_llm_output_tokens,
                 },
             ) as response:
-                response.raise_for_status()
                 content_length = response.headers.get("Content-Length")
                 if content_length is not None:
                     try:
@@ -140,6 +139,9 @@ class LLMAnswerer:
                     if total_bytes > self.settings.max_llm_response_bytes:
                         raise ResponseTooLargeError("LLM 响应超过大小限制")
                     chunks.append(chunk)
+                # 状态码放在读完响应体之后。提前抛出会让 stream() 在对方还停在
+                # SEND_BODY 时关闭连接，httpcore 因此无法把它放回连接池。
+                response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == 429 or status >= 500:

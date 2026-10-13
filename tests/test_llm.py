@@ -1,9 +1,11 @@
+import asyncio
 import json
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from llm_ocs_bridge.llm import (
     InvalidAnswerError,
@@ -313,6 +315,9 @@ async def test_call_model_classifies_http_status(settings, status, error_type):
             response = httpx.Response(status, request=request)
             raise httpx.HTTPStatusError("failure", request=request, response=response)
 
+        async def aiter_bytes(self):
+            yield b"{}"
+
     class Client:
         def stream(self, *args, **kwargs):
             return Response()
@@ -352,3 +357,61 @@ async def test_call_model_rejects_malformed_provider_json(
 
     with pytest.raises(ProviderProtocolError):
         await answerer._call_model([])
+
+
+async def _serve_status(status: int, payload: bytes):
+    async def handle(reader, writer):
+        while True:
+            header = b""
+            while b"\r\n\r\n" not in header:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    writer.close()
+                    return
+                header += chunk
+            head, _, rest = header.partition(b"\r\n\r\n")
+            length = next(
+                (
+                    int(line.split(b":", 1)[1])
+                    for line in head.split(b"\r\n")
+                    if line.lower().startswith(b"content-length:")
+                ),
+                0,
+            )
+            body = rest
+            while len(body) < length:
+                body += await reader.read(length - len(body))
+            writer.write(
+                f"HTTP/1.1 {status} ERR\r\nContent-Length: {len(payload)}\r\n"
+                f"Connection: keep-alive\r\n\r\n".encode()
+                + payload
+            )
+            await writer.drain()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server
+
+
+@pytest_asyncio.fixture
+async def status_server():
+    server = await _serve_status(401, b'{"error":"unauthorized"}')
+    yield server.sockets[0].getsockname()[1]
+    server.close()
+    await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_error_status_reuses_the_connection(settings, status_server):
+    answerer = LLMAnswerer(replace(settings, openai_base_url=f"http://127.0.0.1:{status_server}/v1"))
+    answerer._client = httpx.AsyncClient(trust_env=False)
+
+    sockets = []
+    for _ in range(2):
+        with pytest.raises(ProviderProtocolError):
+            await answerer._call_model([{"role": "user", "content": "x"}])
+        pool = answerer._client._transport._pool._connections
+        assert len(pool) == 1
+        sockets.append(id(pool[0]._connection._network_stream.get_extra_info("socket")))
+
+    assert len(set(sockets)) == 1
+    await answerer.aclose()
