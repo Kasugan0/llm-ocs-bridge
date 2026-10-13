@@ -41,6 +41,101 @@ async def controlled_runtime(settings):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_fallback_answers_share_one_model_call(settings):
+    settings = replace(settings, exa_api_key="", llm_fallback_enabled=True)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.search_client.api_key = ""
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        tasks = [
+            asyncio.create_task(service_module.answer(runtime, query))
+            for _ in range(8)
+        ]
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                release.set()
+                results = await asyncio.gather(*tasks)
+            assert all(result.answer == "A" for result in results)
+            assert runtime.search_client.search.await_count == 0
+            assert runtime.answerer._call_model.await_count == 1
+            counters = await runtime.metrics_store.get_counters()
+            assert counters["llm_calls"] == counters["llm_fallbacks"] == 1
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_disabled_search_fallback_uses_answer_admission_limits(settings):
+    settings = replace(
+        settings, exa_api_key="", llm_fallback_enabled=True, max_answer_waiters=1
+    )
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.search_client.api_key = ""
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        first = asyncio.create_task(service_module.answer(runtime, query))
+        second = None
+        third = None
+        try:
+            async with asyncio.timeout(3):
+                await entered.wait()
+                second = asyncio.create_task(service_module.answer(runtime, query))
+                while runtime._waiters < 1:
+                    await asyncio.sleep(0)
+                third = asyncio.create_task(service_module.answer(runtime, query))
+                rejected = await third
+                release.set()
+                accepted = await asyncio.gather(first, second)
+            assert [item.error for item in (rejected, *accepted)].count(
+                "服务繁忙，请稍后重试"
+            ) == 2
+            assert runtime.answerer._call_model.await_count == 1
+        finally:
+            release.set()
+            await asyncio.gather(
+                *(task for task in (first, second, third) if task is not None),
+                return_exceptions=True,
+            )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_search_miss_fallbacks_share_one_model_call(settings):
+    settings = replace(settings, llm_fallback_enabled=True)
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        started = asyncio.Event()
+        release_search = asyncio.Event()
+
+        async def search(query, limit):
+            started.set()
+            await release_search.wait()
+            return [], 0
+
+        runtime.search_client.search = AsyncMock(side_effect=search)
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        tasks = [
+            asyncio.create_task(service_module.answer(runtime, query))
+            for _ in range(8)
+        ]
+        try:
+            async with asyncio.timeout(3):
+                await started.wait()
+                await asyncio.sleep(0)
+                release_search.set()
+                await entered.wait()
+                release.set()
+                results = await asyncio.gather(*tasks)
+            assert all(result.answer == "A" for result in results)
+            assert runtime.search_client.search.await_count == 1
+            assert runtime.answerer._call_model.await_count == 1
+            counters = await runtime.metrics_store.get_counters()
+            assert counters["llm_calls"] == counters["llm_fallbacks"] == 1
+        finally:
+            release_search.set()
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_identical_cold_answers_share_one_upstream_workflow(settings):
     async with controlled_runtime(settings) as (runtime, entered, release):
         query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
