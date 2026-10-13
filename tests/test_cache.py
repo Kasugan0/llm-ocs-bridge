@@ -80,18 +80,24 @@ async def test_cache_lookup_uses_one_worker_operation(
 
 @pytest.mark.asyncio
 async def test_metric_batch_commits_once(settings, monkeypatch):
-    from unittest.mock import AsyncMock
-
     from llm_ocs_bridge.metrics import MetricsStore
 
     database = Database(settings)
     await database.connect()
     store = MetricsStore(database, settings)
-    commit = AsyncMock(wraps=database._conn.commit)
-    monkeypatch.setattr(database._conn, "commit", commit)
+    commits = 0
+    execute = database._conn._execute
+
+    async def count_commits(operation, *args, **kwargs):
+        nonlocal commits
+        if getattr(operation, "__name__", "") == "commit_unless_cancelled":
+            commits += 1
+        return await execute(operation, *args, **kwargs)
+
+    monkeypatch.setattr(database._conn, "_execute", count_commits)
     try:
         await store.incr(llm_calls=2, search_requests=3)
-        commit.assert_awaited_once()
+        assert commits == 1
         counters = await store.get_counters()
         assert counters["llm_calls"] == 2
         assert counters["search_requests"] == 3

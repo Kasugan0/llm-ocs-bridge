@@ -306,7 +306,10 @@ async def test_cancelled_queued_commit_rolls_back(
             pass
 
     async def observe_queue(operation, *args, **kwargs):
-        if operation == connection._conn.commit and not commit_queued.is_set():
+        if (
+            getattr(operation, "__name__", "") == "commit_unless_cancelled"
+            and not commit_queued.is_set()
+        ):
             blocked_queries.append(asyncio.create_task(block_worker()))
             await worker_started.wait()
             commit_queued.set()
@@ -346,6 +349,57 @@ async def test_cancelled_queued_commit_rolls_back(
 
 
 @pytest.mark.asyncio
+async def test_cancelling_commit_already_handed_to_worker_rolls_back(
+    settings, monkeypatch
+):
+    from llm_ocs_bridge.metrics import MetricsStore
+    from llm_ocs_bridge.storage import Database
+
+    database = Database(settings)
+    await database.connect()
+    connection = database._conn
+    metrics = MetricsStore(database, settings)
+    loop = asyncio.get_running_loop()
+    commit_entered = asyncio.Event()
+    release_commit = Event()
+    order: list[str] = []
+    raw_execute = connection._execute
+
+    async def observe_queue(operation, *args, **kwargs):
+        if getattr(operation, "__name__", "") == "commit_unless_cancelled":
+
+            def guarded_then_paused():
+                order.append("commit-enter")
+                loop.call_soon_threadsafe(commit_entered.set)
+                assert release_commit.wait(5), "Test failed to release queued commit"
+                order.append("commit-run")
+                operation()
+
+            return await raw_execute(guarded_then_paused)
+        return await raw_execute(operation, *args, **kwargs)
+
+    monkeypatch.setattr(connection, "_execute", observe_queue)
+    writer = asyncio.create_task(metrics.incr(cancelled=1))
+    try:
+        await asyncio.wait_for(commit_entered.wait(), 2)
+        order.append("cancel")
+        writer.cancel()
+        release_commit.set()
+        with pytest.raises(asyncio.CancelledError):
+            await writer
+        assert order == ["commit-enter", "cancel", "commit-run"]
+        assert not connection.in_transaction
+        assert "cancelled" not in await metrics.get_counters(), order
+        await database.close()
+        await database.connect()
+        assert "cancelled" not in await MetricsStore(database, settings).get_counters()
+    finally:
+        release_commit.set()
+        await asyncio.gather(writer, return_exceptions=True)
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_cancellation_after_commit_preserves_committed_write(
     settings, monkeypatch
 ):
@@ -357,14 +411,16 @@ async def test_cancellation_after_commit_preserves_committed_write(
     metrics = MetricsStore(database, settings)
     connection = database._conn
     commit_finished = asyncio.Event()
-    commit = connection.commit
+    execute = connection._execute
 
-    async def completed_commit():
-        await commit()
-        commit_finished.set()
-        await asyncio.Event().wait()
+    async def observe_queue(operation, *args, **kwargs):
+        result = await execute(operation, *args, **kwargs)
+        if getattr(operation, "__name__", "") == "commit_unless_cancelled":
+            commit_finished.set()
+            await asyncio.Event().wait()
+        return result
 
-    monkeypatch.setattr(connection, "commit", completed_commit)
+    monkeypatch.setattr(connection, "_execute", observe_queue)
     writer = asyncio.create_task(metrics.incr(committed=1))
     try:
         await asyncio.wait_for(commit_finished.wait(), 2)
@@ -373,7 +429,7 @@ async def test_cancellation_after_commit_preserves_committed_write(
             await writer
         assert not connection.in_transaction
         assert (await metrics.get_counters())["committed"] == 1
-        monkeypatch.setattr(connection, "commit", commit)
+        monkeypatch.setattr(connection, "_execute", execute)
         await metrics.incr(llm_calls=1)
         await database.close()
         await database.connect()

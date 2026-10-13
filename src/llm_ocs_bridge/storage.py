@@ -125,6 +125,7 @@ class Database:
     async def _transaction(self, db: aiosqlite.Connection) -> AsyncIterator[None]:
         cancelled = Event()
         committed = False
+        caller = asyncio.current_task()
 
         def authorize(action: int, operation: str | None, *_args: str | None) -> int:
             if (
@@ -135,11 +136,22 @@ class Database:
                 return sqlite3.SQLITE_DENY
             return sqlite3.SQLITE_OK
 
+        def commit_unless_cancelled() -> None:
+            # Runs on the worker thread, after being queued and before COMMIT.
+            # A caller cancelled in between is already done; re-raising keeps the
+            # cancellation instead of surfacing it as a commit error. The
+            # authorizer covers a COMMIT cancelled before it was queued.
+            if caller is not None and caller.cancelled():
+                raise asyncio.CancelledError
+            if cancelled.is_set():
+                raise sqlite3.OperationalError("transaction cancelled before commit")
+            db._conn.commit()
+
         try:
             await db.set_authorizer(authorize)
             await db.execute("BEGIN IMMEDIATE")
             yield
-            await db.commit()
+            await db._execute(commit_unless_cancelled)
             committed = True
         except BaseException:
             cancelled.set()

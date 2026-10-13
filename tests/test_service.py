@@ -582,12 +582,20 @@ async def test_internal_timeout_is_not_misclassified_as_answer_budget(settings):
 @pytest.mark.asyncio
 async def test_live_search_batches_miss_and_request_counters(settings, monkeypatch):
     async with controlled_runtime(settings) as (runtime, entered, release):
-        commit = AsyncMock(wraps=runtime.db._conn.commit)
-        monkeypatch.setattr(runtime.db._conn, "commit", commit)
+        commits = 0
+        execute = runtime.db._conn._execute
+
+        async def count_commits(operation, *args, **kwargs):
+            nonlocal commits
+            if getattr(operation, "__name__", "") == "commit_unless_cancelled":
+                commits += 1
+            return await execute(operation, *args, **kwargs)
+
+        monkeypatch.setattr(runtime.db._conn, "_execute", count_commits)
         query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
         evidence = await service_module._resolve_evidence(runtime, query)
         assert evidence.results
-        assert commit.await_count == 3
+        assert commits == 3
         counters = await runtime.metrics_store.get_counters()
         assert counters["search_cache_misses"] == 1
         assert counters["search_requests"] == 1
