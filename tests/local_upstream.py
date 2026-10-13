@@ -60,7 +60,10 @@ def upstream_app(script):
         payload = await request.json()
         choices = script.get(provider, [{}])
         index = counts[provider]
-        action = choices[min(index, len(choices) - 1)]
+        if index >= len(choices):
+            detail = f"upstream script exhausted: {provider} request {index + 1}"
+            return JSONResponse({"detail": detail}, status_code=500)
+        action = choices[index]
         record = {
             "provider": provider,
             "payload": payload,

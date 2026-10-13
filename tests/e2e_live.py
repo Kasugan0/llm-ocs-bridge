@@ -17,6 +17,7 @@ import uvicorn
 
 from llm_ocs_bridge.app import create_app
 from llm_ocs_bridge.config import load_settings
+from llm_ocs_bridge.llm import normalize_answer_payload, validate_answer
 
 _TOKEN = "isolated-live-e2e"
 _QUERY = {
@@ -93,10 +94,25 @@ def instrument_transport(settings, budget, attempts):
             attempt["retryable"] = True
             raise
         attempt["status"] = response.status_code
+        if provider == "llm" and response.status_code == 200:
+            body = await response.aread()
+            attempt["invalid_answer"] = not _valid_success(body, settings)
         return response
 
     httpx.AsyncHTTPTransport.handle_async_request = send
     return original
+
+
+def _valid_success(body, settings):
+    try:
+        content = json.loads(body)["choices"][0]["message"]["content"]
+        from llm_ocs_bridge.llm import LLMAnswerer
+
+        payload = LLMAnswerer._parse_payload(content)
+        answer = normalize_answer_payload(payload, _QUERY["type"])
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+        return False
+    return validate_answer(answer, _QUERY["type"], tuple(_QUERY["options"]))
 
 
 def failure(mode, case, reason):
@@ -255,12 +271,13 @@ def validate_case(result, expected_answer="A", max_retries=2):
     for attempt in llm[:-1]:
         status = attempt["status"]
         retryable = (
-            status == 200
-            or status == 429
+            status == 429
             or isinstance(status, int)
             and status >= 500
             or status is None
             and attempt.get("retryable") is True
+            or status == 200
+            and attempt.get("invalid_answer") is True
         )
         if not retryable:
             failures.append("LLM retried a deterministic failure")

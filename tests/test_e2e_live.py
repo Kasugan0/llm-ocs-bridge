@@ -88,7 +88,9 @@ async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
         async with httpx.AsyncClient(trust_env=False) as client:
             records = (await client.get(f"{upstream}/observations")).json()
     assert len(records) == 1
-    assert attempts == [{"provider": "llm", "status": 200}]
+    assert attempts == [
+        {"provider": "llm", "status": 200, "invalid_answer": False}
+    ]
     assert budget.value == 16
 
 
@@ -105,6 +107,8 @@ async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
         ("warm-upstream-call", False),
         ("transient-retry", True),
         ("deterministic-retry", False),
+        ("invalid-answer-retry", True),
+        ("unexplained-success-retry", False),
         ("unknown-upstream", False),
     ],
 )
@@ -126,7 +130,15 @@ async def test_live_check_validates_contract_and_actual_attempts(
                         "search_requests": int(calls > 0),
                         "llm_calls": 0
                         if calls == 0
-                        else 1 + int(fault == "transient-retry"),
+                        else 1
+                        + int(
+                            fault
+                            in {
+                                "transient-retry",
+                                "invalid-answer-retry",
+                                "unexplained-success-retry",
+                            }
+                        ),
                         "answer_cache_hits": int(calls >= 9),
                     }
                 },
@@ -141,12 +153,24 @@ async def test_live_check_validates_contract_and_actual_attempts(
                     {"provider": "llm", "status": 200},
                 ]
             )
-            if fault in {"transient-retry", "deterministic-retry"}:
+            if fault in {
+                "transient-retry",
+                "deterministic-retry",
+                "invalid-answer-retry",
+                "unexplained-success-retry",
+            }:
                 attempts.insert(
                     1,
                     {
                         "provider": "llm",
-                        "status": (503 if fault == "transient-retry" else 401),
+                        "status": (503 if fault == "transient-retry" else 401)
+                        if fault in {"transient-retry", "deterministic-retry"}
+                        else 200,
+                        **(
+                            {"invalid_answer": True}
+                            if fault == "invalid-answer-retry"
+                            else {}
+                        ),
                     },
                 )
             if fault == "failed-attempts":

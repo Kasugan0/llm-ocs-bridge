@@ -8,6 +8,7 @@ import pytest
 from local_upstream import (
     local_server,
     restrict_network,
+    upstream_app,
     upstream_client,
     wait_state,
 )
@@ -104,7 +105,11 @@ async def test_protocol_options_and_types_keep_independent_work(settings):
         dict(QUERY, options=["A.H2O", "B.CO2"]),
         dict(QUERY, type="multiple"),
     ]
-    async with running(settings, {"llm": [{"gate": "distinct"}]}) as (client, control):
+    script = {
+        "exa": [{}] * len(queries),
+        "llm": [{"gate": "distinct"}] * len(queries),
+    }
+    async with running(settings, script) as (client, control):
         tasks = [
             asyncio.create_task(client.post("/search", json=query)) for query in queries
         ]
@@ -160,7 +165,9 @@ async def test_protocol_search_failure_cache_and_recovery(settings, failure):
 async def test_protocol_retry_classification_counts_actual_requests(
     settings, status, attempts, success
 ):
-    responses = [{"status": status}, {}] if success else [{"status": status}]
+    responses = [{"status": status}] * (attempts - int(success))
+    if success:
+        responses.append({})
     error_type = "ProviderProtocolError" if status == 401 else "TransientLLMError"
     async with running(settings, {"llm": responses}) as (
         client,
@@ -255,6 +262,16 @@ def test_local_network_guard_rejects_external_destinations():
         restrict_network("socket.connect", (None, ("203.0.113.1", 443)))
     with pytest.raises(PermissionError):
         restrict_network("socket.getaddrinfo", ("api.exa.ai", 443))
+
+
+def test_local_upstream_rejects_requests_beyond_script():
+    from fastapi.testclient import TestClient
+
+    with TestClient(upstream_app({"llm": [{"status": 503}]})) as client:
+        assert client.post("/v1/chat/completions", json={}).status_code == 503
+        overflow = client.post("/v1/chat/completions", json={})
+    assert overflow.status_code == 500
+    assert overflow.json()["detail"] == "upstream script exhausted: llm request 2"
 
 
 @pytest.mark.asyncio
