@@ -297,6 +297,18 @@ async def test_runtime_close_cancels_owned_answers_before_database(settings):
 
 
 @pytest.mark.asyncio
+async def test_request_during_close_returns_ocs_error(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime._closing = True
+        result = await service_module.answer(
+            runtime, OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        )
+        assert result.error == "服务正在关闭"
+        assert result.answer is None
+        assert runtime.answerer._call_model.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_distinct_options_and_types_run_concurrently(settings):
     async with controlled_runtime(settings) as (runtime, entered, release):
         queries = (
@@ -502,6 +514,9 @@ async def test_answer_deadline_includes_initial_cache_wait(settings):
         assert result.error == "答题超时"
         assert not runtime._answers
         assert not runtime.search_client.search.called
+        errors = await runtime.metrics_store.get_recent_errors()
+        assert len(errors) == 1
+        assert "AnswerTimeout" in errors[0]["error"]
 
 
 @pytest.mark.asyncio

@@ -260,12 +260,12 @@ async def _answer_request(
     runtime: Runtime, query: OCSQuery, expires: float
 ) -> AnswerResult:
     if runtime._closing:
-        raise RuntimeError("Runtime is closing")
+        return AnswerResult(error="服务正在关闭")
     cached = await _cached_answer(runtime, query, "search")
     if cached is not None:
         return AnswerResult(answer=cached)
     if runtime._closing:
-        raise RuntimeError("Runtime is closing")
+        return AnswerResult(error="服务正在关闭")
     key = answer_key(query, "search", runtime.settings)
     task = runtime._answers.get(key)
     if runtime._waiters >= runtime.settings.max_answer_waiters or (
@@ -304,4 +304,8 @@ async def answer(runtime: Runtime, query: OCSQuery) -> AnswerResult:
     except TimeoutError:
         if not deadline.expired():
             raise
+        if not runtime._answers:
+            await runtime.metrics_store.log_error(
+                "service", "AnswerTimeout", "Answer deadline exceeded"
+            )
         return AnswerResult(error="答题超时")
