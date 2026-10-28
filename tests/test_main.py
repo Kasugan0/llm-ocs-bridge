@@ -534,11 +534,40 @@ def test_exa_check_closes_client_on_failure(settings, monkeypatch):
     assert closed is True
 
 
-def test_clear_cache_ignores_invalid_llm_configuration(tmp_path, monkeypatch):
+def test_clear_cache_ignores_invalid_llm_configuration(
+    settings, tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "invalid")
     monkeypatch.setenv("OPENAI_API_KEY", "")
-    main_module.run(["clear-cache", "--scope", "all"])
+    query = OCSQuery(title="题目", options=("A.1",), question_type="single")
+
+    async def populate():
+        db = Database(settings)
+        await db.connect()
+        try:
+            await SearchCacheStore(db).set(
+                "search-entry", query, "exa", 0.8, "[]", "v2"
+            )
+            await AnswerCacheStore(db).set(
+                "answer-entry", query, "model", "v2", "search", "A"
+            )
+        finally:
+            await db.close()
+
+    asyncio.run(populate())
+    assert main_module.run(["clear-cache", "--scope", "all"]) is None
+
+    async def cleared():
+        db = Database(settings)
+        await db.connect()
+        try:
+            assert await SearchCacheStore(db).get("search-entry") is None
+            assert await AnswerCacheStore(db).get("answer-entry") is None
+        finally:
+            await db.close()
+
+    asyncio.run(cleared())
 
 
 def test_startup_explains_invalid_configuration(tmp_path, monkeypatch, capsys):
