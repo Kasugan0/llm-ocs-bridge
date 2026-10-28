@@ -67,16 +67,23 @@ def test_live_runner_records_safe_case_failure(settings, monkeypatch):
 async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
     settings, monkeypatch
 ):
-    budget = multiprocessing.get_context("spawn").Value("i", 15)
+    budget = multiprocessing.get_context("spawn").Value("i", 14)
     attempts = []
+    current = {"query": e2e_live._QUERY}
     original = httpx.AsyncHTTPTransport.handle_async_request
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", original)
-    with local_server("upstream", {}) as upstream:
+    with local_server("upstream", {"llm": [{}, {}]}) as upstream:
         e2e_live.instrument_transport(
-            replace(settings, openai_base_url=upstream), budget, attempts
+            replace(settings, openai_base_url=upstream), budget, attempts, current
         )
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.post(f"{upstream}/v1/chat/completions", json={})
+                assert response.status_code == 200
+                current["query"] = {
+                    "type": "judgement",
+                    "options": ["正确", "错误"],
+                }
                 response = await client.post(f"{upstream}/v1/chat/completions", json={})
                 assert response.status_code == 200
                 with pytest.raises(RuntimeError, match="budget exhausted"):
@@ -87,9 +94,10 @@ async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
             httpx.AsyncHTTPTransport.handle_async_request = original
         async with httpx.AsyncClient(trust_env=False) as client:
             records = (await client.get(f"{upstream}/observations")).json()
-    assert len(records) == 1
+    assert len(records) == 2
     assert attempts == [
-        {"provider": "llm", "status": 200, "invalid_answer": False}
+        {"provider": "llm", "status": 200, "invalid_answer": False},
+        {"provider": "llm", "status": 200, "invalid_answer": True},
     ]
     assert budget.value == 16
 
@@ -120,6 +128,8 @@ async def test_live_check_validates_contract_and_actual_attempts(
 
     async def curl(port, path, payload=None, token=e2e_live._TOKEN):
         nonlocal calls
+        if path == "/live-query":
+            return {"status": 200, "body": payload, "provider": None}
         if path == "/live-attempts":
             return {"status": 200, "body": deepcopy(attempts)}
         if path == "/stats":

@@ -73,7 +73,7 @@ def reserve_attempt(budget):
         budget.value += 1
 
 
-def instrument_transport(settings, budget, attempts):
+def instrument_transport(settings, budget, attempts, current):
     original = httpx.AsyncHTTPTransport.handle_async_request
     llm_url = httpx.URL(settings.openai_base_url)
 
@@ -96,23 +96,25 @@ def instrument_transport(settings, budget, attempts):
         attempt["status"] = response.status_code
         if provider == "llm" and response.status_code == 200:
             body = await response.aread()
-            attempt["invalid_answer"] = not _valid_success(body, settings)
+            attempt["invalid_answer"] = not _valid_success(body, current["query"])
         return response
 
     httpx.AsyncHTTPTransport.handle_async_request = send
     return original
 
 
-def _valid_success(body, settings):
+def _valid_success(body, query):
     try:
         content = json.loads(body)["choices"][0]["message"]["content"]
         from llm_ocs_bridge.llm import LLMAnswerer
 
         payload = LLMAnswerer._parse_payload(content)
-        answer = normalize_answer_payload(payload, _QUERY["type"])
+        answer = normalize_answer_payload(payload, query["type"])
+        return validate_answer(
+            answer, query["type"], tuple(query.get("options", ()))
+        )
     except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
         return False
-    return validate_answer(answer, _QUERY["type"], tuple(_QUERY["options"]))
 
 
 def failure(mode, case, reason):
@@ -132,11 +134,17 @@ def serve(connection, settings, budget):
 async def serve_async(connection, settings, budget):
     app = create_app(settings)
     attempts = []
-    original = instrument_transport(settings, budget, attempts)
+    current = {"query": _QUERY}
+    original = instrument_transport(settings, budget, attempts, current)
 
     @app.get("/live-attempts")
     async def observed_attempts():
         return attempts
+
+    @app.post("/live-query")
+    async def declare_query(query: dict):
+        current["query"] = query
+        return query
 
     with socket.socket() as listener:
         listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -299,6 +307,9 @@ async def check(
     cold_count=1,
 ):
     query = _QUERY if query is None else query
+    declared = await curl(port, "/live-query", query)
+    if declared["status"] != 200:
+        raise RuntimeError("Cannot declare live query")
     snapshots = {"before": await snapshot(port)}
     unauthorized = await curl(port, "/search", query, "incorrect-token")
     snapshots["auth"] = await snapshot(port)
