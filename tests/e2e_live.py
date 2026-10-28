@@ -63,6 +63,21 @@ _CASES = (
         },
         "H#O",
     ),
+    (
+        "image-logo",
+        {
+            "title": '图中展示的是哪家公司的标志？'
+            '<img src="https://www.baidu.com/img/bd_logo1.png">',
+            "options": [
+                "A. 谷歌 Google",
+                "B. 百度 Baidu",
+                "C. 腾讯 Tencent",
+                "D. 阿里巴巴 Alibaba",
+            ],
+            "type": "single",
+        },
+        "B",
+    ),
 )
 
 
@@ -419,7 +434,7 @@ def main():
         "env_unchanged": unchanged,
         "results": results,
         "passed": unchanged
-        and len(results) == 8
+        and len(results) == 2 * len(_CASES)
         and all(row["passed"] for row in results),
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2))

@@ -11,7 +11,7 @@ from llm_ocs_bridge.llm import validate_answer
 
 
 def test_live_cases_have_distinct_valid_expected_answers():
-    assert len(e2e_live._CASES) == 4
+    assert len(e2e_live._CASES) == 5
     assert {query["type"] for _, query, _ in e2e_live._CASES} == {
         "single",
         "multiple",
