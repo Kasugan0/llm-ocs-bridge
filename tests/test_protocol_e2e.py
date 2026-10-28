@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -317,3 +318,65 @@ async def test_protocol_overload_rejects_without_another_upstream(settings):
         finally:
             await control.post("/release/admission")
         assert_answer(await pending)
+
+
+@pytest.mark.asyncio
+async def test_protocol_image_query_uses_vision_model(settings):
+    query = {
+        "title": '图中是什么公式 <img src="https://x/a.png">',
+        "options": ["A.CO2", "B.H2O"],
+        "type": "single",
+    }
+    async with running(settings, {}, vision_model="vision-x") as (client, control):
+        assert_answer(await client.post("/search", json=query))
+        records = (await control.get("/observations")).json()
+        exa = next(row for row in records if row["provider"] == "exa")
+        assert "<img" not in exa["payload"]["query"]
+        assert "图中是什么公式" in exa["payload"]["query"]
+        llm = next(row for row in records if row["provider"] == "llm")
+        assert llm["payload"]["model"] == "vision-x"
+        content = llm["payload"]["messages"][1]["content"]
+        assert json.loads(content[0]["text"])["title"] == "图中是什么公式"
+        assert content[1:] == [
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://x/a.png"},
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_protocol_image_query_without_vision_model_fails(settings):
+    query = {
+        "title": '图中是什么公式 <img src="https://x/a.png">',
+        "options": ["A.CO2", "B.H2O"],
+        "type": "single",
+    }
+    async with running(settings) as (client, control):
+        response = await client.post("/search", json=query)
+        assert response.status_code == 200
+        assert response.json() == {
+            "code": 0,
+            "msg": "图片题未配置视觉模型",
+        }
+        records = (await control.get("/observations")).json()
+        assert [row["provider"] for row in records] == ["exa"]
+
+
+@pytest.mark.asyncio
+async def test_protocol_audio_media_is_stripped_and_ignored(settings):
+    query = {
+        "title": '水的化学式 <audio src="https://x/a.mp3"></audio>',
+        "options": ["A.CO2", "B.H2O"],
+        "type": "single",
+    }
+    async with running(settings) as (client, control):
+        assert_answer(await client.post("/search", json=query))
+        records = (await control.get("/observations")).json()
+        exa = next(row for row in records if row["provider"] == "exa")
+        assert "<audio" not in exa["payload"]["query"]
+        llm = next(row for row in records if row["provider"] == "llm")
+        content = llm["payload"]["messages"][1]["content"]
+        assert isinstance(content, str)
+        assert "水的化学式" in content
+        assert "<audio" not in content

@@ -10,12 +10,14 @@ import pytest_asyncio
 from llm_ocs_bridge.llm import (
     InvalidAnswerError,
     LLMAnswerer,
+    MissingKeyError,
     ProviderProtocolError,
     ResponseTooLargeError,
     TransientLLMError,
     _sanitize_text,
     validate_answer,
 )
+from llm_ocs_bridge.models import MediaItem
 from llm_ocs_bridge.questions import normalize_query
 
 
@@ -199,7 +201,10 @@ async def test_call_model_uses_token_limit_and_rejects_large_response(settings):
     on_attempt = AsyncMock()
 
     messages = [{"role": "user", "content": "prompt"}]
-    assert await answerer._call_model(messages, on_attempt) == '{"answer":"A"}'
+    assert (
+        await answerer._call_model(messages, answerer.model, on_attempt)
+        == '{"answer":"A"}'
+    )
     on_attempt.assert_awaited_once()
     assert client.request["json"]["max_tokens"] == 7
     assert client.request["json"]["messages"] == messages
@@ -209,14 +214,14 @@ async def test_call_model_uses_token_limit_and_rejects_large_response(settings):
     response = Response([payload], content_length=len(payload))
     client.response = response
     with pytest.raises(llm_module.ResponseTooLargeError, match="LLM 响应超过大小限制"):
-        await answerer._call_model(messages)
+        await answerer._call_model(messages, "model")
     assert response.closed
     assert response.read_chunks == 0
 
     response = Response([b"{}", payload[2:]], content_length=None)
     client.response = response
     with pytest.raises(llm_module.ResponseTooLargeError, match="LLM 响应超过大小限制"):
-        await answerer._call_model(messages)
+        await answerer._call_model(messages, "model")
     assert response.closed
     assert response.read_chunks == 1
 
@@ -290,7 +295,7 @@ async def test_call_model_classifies_transport_errors_as_transient(settings, err
     answerer._client = Client()
 
     with pytest.raises(TransientLLMError):
-        await answerer._call_model([])
+        await answerer._call_model([], "model")
 
 
 @pytest.mark.asyncio
@@ -328,7 +333,7 @@ async def test_call_model_classifies_http_status(settings, status, error_type):
     answerer._client = Client()
 
     with pytest.raises(error_type):
-        await answerer._call_model([])
+        await answerer._call_model([], "model")
 
 
 @pytest.mark.asyncio
@@ -358,7 +363,7 @@ async def test_call_model_rejects_malformed_provider_json(
     answerer._client = Client()
 
     with pytest.raises(ProviderProtocolError):
-        await answerer._call_model([])
+        await answerer._call_model([], "model")
 
 
 async def _serve_status(status: int, payload: bytes):
@@ -410,7 +415,7 @@ async def test_error_status_reuses_the_connection(settings, status_server):
     sockets = []
     for _ in range(2):
         with pytest.raises(ProviderProtocolError):
-            await answerer._call_model([{"role": "user", "content": "x"}])
+            await answerer._call_model([{"role": "user", "content": "x"}], "model")
         pool = answerer._client._transport._pool._connections
         assert len(pool) == 1
         sockets.append(id(pool[0]._connection._network_stream.get_extra_info("socket")))
@@ -469,6 +474,63 @@ def test_validate_answer_rejects_residual_free_text_markup(
     answer, question_type, expected
 ):
     assert validate_answer(answer, question_type) is expected
+
+
+@pytest.mark.asyncio
+async def test_answer_routes_image_media_to_vision_model(settings):
+    settings = replace(settings, vision_model="vision-x")
+    answerer = LLMAnswerer(settings)
+    answerer._call_model = AsyncMock(return_value='{"answer":"B"}')
+    query = replace(
+        normalize_query("题目", "A#B", "single"),
+        media=(
+            MediaItem("image", "https://x/a.png"),
+            MediaItem("image", "https://x/b.jpg"),
+        ),
+    )
+
+    assert await answerer.answer(query, []) == "B"
+
+    messages, model = answerer._call_model.call_args.args[:2]
+    assert model == "vision-x"
+    content = messages[1]["content"]
+    assert content[0]["type"] == "text"
+    assert json.loads(content[0]["text"])["title"] == "题目"
+    assert content[1:] == [
+        {"type": "image_url", "image_url": {"url": "https://x/a.png"}},
+        {"type": "image_url", "image_url": {"url": "https://x/b.jpg"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_answer_requires_vision_model_for_image_media(settings):
+    answerer = LLMAnswerer(settings)
+    answerer._call_model = AsyncMock()
+    query = replace(
+        normalize_query("题目", "A#B", "single"),
+        media=(MediaItem("image", "https://x/a.png"),),
+    )
+
+    with pytest.raises(MissingKeyError, match="图片题未配置视觉模型"):
+        await answerer.answer(query, [])
+
+    answerer._call_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_answer_ignores_audio_media(settings):
+    answerer = LLMAnswerer(settings)
+    answerer._call_model = AsyncMock(return_value='{"answer":"A"}')
+    query = replace(
+        normalize_query("题目", "A#B", "single"),
+        media=(MediaItem("audio", "https://x/a.mp3"),),
+    )
+
+    assert await answerer.answer(query, []) == "A"
+
+    messages, model = answerer._call_model.call_args.args[:2]
+    assert model == answerer.model
+    assert isinstance(messages[1]["content"], str)
 
 
 @pytest.mark.asyncio

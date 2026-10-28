@@ -25,7 +25,7 @@ async def controlled_runtime(settings):
     )
     runtime.answerer = LLMAnswerer(runtime.settings)
 
-    async def model(messages, on_attempt):
+    async def model(messages, model, on_attempt):
         await on_attempt()
         entered.set()
         await release.wait()
@@ -318,7 +318,7 @@ async def test_distinct_options_and_types_run_concurrently(settings):
         )
         all_entered = asyncio.Event()
 
-        async def model(messages, on_attempt):
+        async def model(messages, model, on_attempt):
             await on_attempt()
             if runtime.answerer._call_model.await_count == len(queries):
                 all_entered.set()
@@ -528,7 +528,7 @@ async def test_answer_deadline_includes_retry_backoff(settings):
     )
     async with controlled_runtime(settings) as (runtime, entered, release):
 
-        async def model(messages, on_attempt):
+        async def model(messages, model, on_attempt):
             await on_attempt()
             entered.set()
             raise TransientLLMError("synthetic transport failure")
@@ -730,7 +730,7 @@ async def test_service_recovers_search_before_using_fallback_cache(settings):
     runtime.answerer = LLMAnswerer(runtime.settings)
     runtime.answerer._call_model = AsyncMock()
 
-    async def model(messages, on_attempt):
+    async def model(messages, model, on_attempt):
         await on_attempt()
         return '{"answer":"A"}'
 

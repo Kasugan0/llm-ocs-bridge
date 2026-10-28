@@ -56,7 +56,9 @@ async def serve_async(connection: Connection, directory: str) -> None:
         return [SearchResult(query.title, "https://example.com", "water H2O", "exa")], 1
 
     async def model(
-        messages: list[dict[str, str]], on_attempt: Callable[[], Awaitable[None]]
+        messages: list[dict[str, object]],
+        model: str,
+        on_attempt: Callable[[], Awaitable[None]],
     ) -> str:
         await on_attempt()
         await asyncio.sleep(0.2)

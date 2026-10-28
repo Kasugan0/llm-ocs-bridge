@@ -35,7 +35,7 @@ def test_render_search_query_preserves_question_structure():
 
 def test_question_cache_parts_and_option_serialization():
     query = OCSQuery(title="题目", options=("A.1", "B.2"), question_type="single")
-    assert question_cache_parts(query) == ("题目", ["A.1", "B.2"], "single")
+    assert question_cache_parts(query) == ("题目", ["A.1", "B.2"], "single", [])
     assert serialize_options(query.options) == "A.1#B.2"
 
 

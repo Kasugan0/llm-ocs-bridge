@@ -26,6 +26,7 @@ _TEST_ENV = {
     "OPENAI_API_KEY": "test-openai-key",
     "EXA_API_KEY": "",
     "LLM_FALLBACK_ENABLED": "false",
+    "VISION_MODEL": "",
 }
 
 _PROXY_ENV = (

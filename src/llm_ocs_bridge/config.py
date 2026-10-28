@@ -108,6 +108,7 @@ class Settings(StorageSettings):
     openai_api_key: str | None = field(repr=False)
     openai_base_url: str
     openai_model: str
+    vision_model: str
     llm_timeout_seconds: float
     llm_retry_backoff_seconds: float
     access_token: str | None = field(repr=False)
@@ -183,6 +184,7 @@ def load_settings(
         openai_api_key=_text(values, "OPENAI_API_KEY"),
         openai_base_url=_text(values, "OPENAI_BASE_URL") or "https://api.openai.com/v1",
         openai_model=_text(values, "OPENAI_MODEL") or "gpt-4o-mini",
+        vision_model=_text(values, "VISION_MODEL") or "",
         llm_timeout_seconds=_float(
             values, "LLM_TIMEOUT_SECONDS", minimum=0.0, minimum_inclusive=False
         ),

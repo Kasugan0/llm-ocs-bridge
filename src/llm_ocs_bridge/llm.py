@@ -49,6 +49,7 @@ class LLMAnswerer:
             raise MissingKeyError("OPENAI_API_KEY is required")
         self.base_url = settings.openai_base_url
         self.model = settings.openai_model
+        self.vision_model = settings.vision_model
         self._client: httpx.AsyncClient | None = None
 
     async def answer(
@@ -57,6 +58,10 @@ class LLMAnswerer:
         evidence: list[SearchResult],
         on_attempt: AttemptHook | None = None,
     ) -> str:
+        images = [item.url for item in query.media if item.kind == "image"]
+        if images and not self.vision_model:
+            raise MissingKeyError("图片题未配置视觉模型")
+        model = self.vision_model if images else self.model
         formatted_options = format_options_for_prompt(query.options)
         evidence_text = format_search_context(
             evidence, self.settings.max_evidence_bytes
@@ -70,9 +75,10 @@ class LLMAnswerer:
                 query.question_type,
                 evidence_text,
                 previous_invalid_response,
+                images,
             )
             try:
-                raw = await self._call_model(messages, on_attempt)
+                raw = await self._call_model(messages, model, on_attempt)
             except TransientLLMError:
                 if attempt == self.settings.max_llm_retries:
                     raise
@@ -96,7 +102,8 @@ class LLMAnswerer:
 
     async def _call_model(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, object]],
+        model: str,
         on_attempt: AttemptHook | None = None,
     ) -> str:
         if self._client is None:
@@ -114,7 +121,7 @@ class LLMAnswerer:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": self.model,
+                    "model": model,
                     "messages": messages,
                     "temperature": 0.1,
                     "max_tokens": self.settings.max_llm_output_tokens,
@@ -180,7 +187,8 @@ class LLMAnswerer:
         question_type: str,
         evidence_text: str,
         previous_invalid_response: str = "",
-    ) -> list[dict[str, str]]:
+        images: Sequence[str] = (),
+    ) -> list[dict[str, object]]:
         if question_type == "single":
             output_rule = (
                 '只返回 JSON：{"answer":"B"}。answer 必须是唯一正确选项的大写字母。'
@@ -218,12 +226,19 @@ class LLMAnswerer:
         }
         if previous_invalid_response:
             data["previous_invalid_response"] = previous_invalid_response
+        payload_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        content: object = payload_text
+        if images:
+            content = [
+                {"type": "text", "text": payload_text},
+                *(
+                    {"type": "image_url", "image_url": {"url": url}}
+                    for url in images
+                ),
+            ]
         return [
             {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": json.dumps(data, ensure_ascii=False, separators=(",", ":")),
-            },
+            {"role": "user", "content": content},
         ]
 
 
