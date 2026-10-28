@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import replace
+from urllib.parse import urlparse
 
 from .config import Settings
-from .models import OCSQuery
+from .models import MediaItem, OCSQuery
 from .utils import normalize_text
 
 _OPTION_LABEL_RE = re.compile(
@@ -12,8 +14,52 @@ _OPTION_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_MEDIA_RE = re.compile(
+    r"<(img|audio|source)\b[^>]*?\bsrc\s*=\s*"
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))[^>]*>"
+    r"|!\[[^\]]*\]\(\s*(\S+?)(?:\s+[\"'][^\"']*[\"'])?\s*\)"
+    r"|(https?://[^\s<>\"'）。，、；：】「」]+)",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEDIA_TAG_SHELL_RE = re.compile(r"</?(?:img|audio|source)\b[^>]*>", re.IGNORECASE)
+
+_IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"})
+_AUDIO_EXTENSIONS = frozenset({"mp3", "wav", "m4a", "ogg", "flac", "aac"})
+
 
 QUESTION_TYPES = frozenset({"single", "multiple", "judgement", "completion"})
+
+
+def extract_media(text: str) -> tuple[str, tuple[MediaItem, ...]]:
+    media: list[MediaItem] = []
+
+    def collect(match: re.Match[str]) -> str:
+        tag, dq_url, sq_url, uq_url, md_url, bare_url = match.groups()
+        if tag is not None:
+            url = next(
+                group for group in (dq_url, sq_url, uq_url) if group is not None
+            )
+            if url.startswith(("http://", "https://")):
+                kind = "audio" if tag.lower() in {"audio", "source"} else "image"
+                media.append(MediaItem(kind, url))
+            return " "
+        if md_url is not None:
+            if md_url.startswith(("http://", "https://")):
+                media.append(MediaItem("image", md_url))
+            return " "
+        path = urlparse(bare_url).path.lower()
+        extension = path.rsplit(".", 1)[-1] if "." in path else ""
+        if extension in _IMAGE_EXTENSIONS:
+            media.append(MediaItem("image", bare_url))
+            return " "
+        if extension in _AUDIO_EXTENSIONS:
+            media.append(MediaItem("audio", bare_url))
+            return " "
+        return bare_url
+
+    cleaned = _MEDIA_RE.sub(collect, text)
+    cleaned = _MEDIA_TAG_SHELL_RE.sub(" ", cleaned)
+    return normalize_text(cleaned), tuple(dict.fromkeys(media))
 
 
 def normalize_query(
@@ -132,6 +178,18 @@ def validate_query(query: OCSQuery, settings: Settings) -> None:
 
 def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
     query = normalize_query(*_fields(body))
+    title, media = extract_media(query.title)
+    options = []
+    for option in query.options:
+        option_text, option_media = extract_media(option)
+        options.append(option_text)
+        media += option_media
+    query = replace(
+        query,
+        title=title,
+        options=tuple(options),
+        media=tuple(dict.fromkeys(media)),
+    )
     validate_query(query, settings)
     if not query.title:
         raise QuestionError("题目不能为空")

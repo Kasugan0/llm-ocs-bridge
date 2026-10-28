@@ -5,10 +5,17 @@ from urllib.parse import urlparse
 
 
 @dataclass(frozen=True, slots=True)
+class MediaItem:
+    kind: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
 class OCSQuery:
     title: str
     options: tuple[str, ...] = ()
     question_type: str = ""
+    media: tuple[MediaItem, ...] = ()
 
 
 @dataclass(slots=True)

@@ -1,9 +1,10 @@
 import pytest
 
-from llm_ocs_bridge.models import OCSQuery
+from llm_ocs_bridge.models import MediaItem, OCSQuery
 from llm_ocs_bridge.questions import (
     QuestionError,
     allowed_option_labels,
+    extract_media,
     format_options_for_prompt,
     normalize_query,
     parse_query,
@@ -64,3 +65,80 @@ def test_option_labels_require_boundaries_and_follow_positions():
     assert allowed_option_labels(("Apple", "Banana")) == {"A", "B"}
     assert allowed_option_labels(("A.苹果", "B:香蕉")) == {"A", "B"}
     assert allowed_option_labels(("A苹果", "B香蕉")) == {"A", "B"}
+
+
+@pytest.mark.parametrize(
+    ("text", "cleaned", "media"),
+    [
+        ("题目", "题目", ()),
+        ("题目 有空  格", "题目 有空 格", ()),
+        ('题目 <img src="https://x/a.png">', "题目", (("image", "https://x/a.png"),)),
+        ("题目 <img src='https://x/a.png'>", "题目", (("image", "https://x/a.png"),)),
+        ("题目 <img src=https://x/a.png>", "题目", (("image", "https://x/a.png"),)),
+        (
+            '题目 <img class="big" src="https://x/a.png" alt="图">',
+            "题目",
+            (("image", "https://x/a.png"),),
+        ),
+        (
+            '题目 <audio src="https://x/a.mp3"></audio>',
+            "题目",
+            (("audio", "https://x/a.mp3"),),
+        ),
+        (
+            '题目 <audio><source src="https://x/a.mp3" type="audio/mpeg"></audio>',
+            "题目",
+            (("audio", "https://x/a.mp3"),),
+        ),
+        ("题目 ![图](https://x/a.png)", "题目", (("image", "https://x/a.png"),)),
+        ('题目 ![图](https://x/a.png "说明")', "题目", (("image", "https://x/a.png"),)),
+        ("题目 ![图](/local.png)", "题目", ()),
+        ("题目见 http://x/a.jpg", "题目见", (("image", "http://x/a.jpg"),)),
+        ("题目 https://x/a.MP3", "题目", (("audio", "https://x/a.MP3"),)),
+        ("题目 https://x/a.png?v=1#f", "题目", (("image", "https://x/a.png?v=1#f"),)),
+        ("题目 https://x/page.html", "题目 https://x/page.html", ()),
+        ("题目 https://x/page", "题目 https://x/page", ()),
+        ('题目 <img src="/local.png">', "题目", ()),
+        ('题目 <img src="data:image/png;base64,xx">', "题目", ()),
+    ],
+)
+def test_extract_media(text, cleaned, media):
+    expected = tuple(MediaItem(kind, url) for kind, url in media)
+    assert extract_media(text) == (cleaned, expected)
+
+
+def test_extract_media_preserves_document_order_and_dedupes():
+    text = (
+        '<img src="https://x/1.png">题 ![m](https://x/2.jpg)'
+        ' https://x/3.wav <audio src="https://x/4.mp3">'
+        ' <img src="https://x/1.png">'
+    )
+    cleaned, media = extract_media(text)
+    assert cleaned == "题"
+    assert [item.url for item in media] == [
+        "https://x/1.png",
+        "https://x/2.jpg",
+        "https://x/3.wav",
+        "https://x/4.mp3",
+    ]
+    assert [item.kind for item in media] == ["image", "image", "audio", "audio"]
+
+
+def test_parse_query_merges_title_and_option_media(settings):
+    query = parse_query(
+        {
+            "title": '题目 <img src="https://x/a.png">',
+            "options": [
+                'A.1 <img src="https://x/a.png">',
+                "B.2 ![图](https://x/b.jpg)",
+            ],
+            "type": "single",
+        },
+        settings,
+    )
+    assert query.title == "题目"
+    assert query.options == ("A.1", "B.2")
+    assert query.media == (
+        MediaItem("image", "https://x/a.png"),
+        MediaItem("image", "https://x/b.jpg"),
+    )
