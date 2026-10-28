@@ -223,7 +223,12 @@ def serialize_options(options: Sequence[str]) -> str:
 
 
 def question_cache_parts(query: OCSQuery) -> tuple[object, ...]:
-    return (query.title, list(query.options), query.question_type)
+    return (
+        query.title,
+        list(query.options),
+        query.question_type,
+        [(item.kind, item.url) for item in query.media],
+    )
 
 
 def cache_key(*parts: object) -> str:

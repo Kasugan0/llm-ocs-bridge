@@ -5,8 +5,8 @@ from dataclasses import replace
 import pytest
 
 from llm_ocs_bridge import cache as cache_module
-from llm_ocs_bridge.cache import cache_key
-from llm_ocs_bridge.models import OCSQuery, SearchResult
+from llm_ocs_bridge.cache import answer_key, cache_key, search_key
+from llm_ocs_bridge.models import MediaItem, OCSQuery, SearchResult
 from llm_ocs_bridge.storage import Database
 
 
@@ -351,6 +351,23 @@ async def test_sqlite_files_are_private_after_connect(settings, tmp_path):
     for candidate in candidates:
         assert os.stat(candidate).st_mode & 511 == 384
     await store.db.close()
+
+
+def test_media_urls_participate_in_cache_keys(settings):
+    base = OCSQuery(title="题目", question_type="single")
+    image_a = OCSQuery(
+        title="题目",
+        question_type="single",
+        media=(MediaItem("image", "https://x/a.png"),),
+    )
+    image_b = replace(image_a, media=(MediaItem("image", "https://x/b.png"),))
+    audio = replace(image_a, media=(MediaItem("audio", "https://x/a.png"),))
+    assert search_key(base, settings) != search_key(image_a, settings)
+    assert search_key(image_a, settings) != search_key(image_b, settings)
+    assert search_key(image_a, settings) != search_key(audio, settings)
+    assert answer_key(base, "search", settings) != answer_key(
+        image_a, "search", settings
+    )
 
 
 def test_decode_search_results_discards_malformed_fields():
