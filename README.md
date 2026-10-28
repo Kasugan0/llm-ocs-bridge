@@ -135,7 +135,6 @@ uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
 ## 文档
 
 - [安装、配置、OCS 接入与故障排查](DEPLOY.md)
-- [HTTP 合同与隔离验收](TESTING.md)
 - [完整环境变量及默认值](.env.example)
 - [OCS 题库 API 文档](https://docs.ocsjs.com/docs/other/api)
 
