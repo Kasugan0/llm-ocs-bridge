@@ -138,7 +138,6 @@ uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
 - [HTTP 合同与隔离验收](TESTING.md)
 - [完整环境变量及默认值](.env.example)
 - [OCS 题库 API 文档](https://docs.ocsjs.com/docs/other/api)
-- [Exa x402 文档](https://exa.ai/docs/integrations/payments/x402/quickstart)
 
 ## 安全说明
 
