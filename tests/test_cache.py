@@ -335,14 +335,21 @@ async def test_sqlite_files_are_private_after_connect(settings, tmp_path):
     path = tmp_path / "private.sqlite3"
     store = SearchCacheStore(Database(replace(settings, cache_path=str(path))))
     await store.db.connect()
+    await store.set(
+        "entry",
+        OCSQuery(title="题目", options=("A.1",), question_type="single"),
+        "exa",
+        0.8,
+        "[]",
+        "v2",
+    )
     candidates = (
         path,
         path.with_name(f"{path.name}-wal"),
         path.with_name(f"{path.name}-shm"),
     )
     for candidate in candidates:
-        if candidate.exists():
-            assert os.stat(candidate).st_mode & 511 == 384
+        assert os.stat(candidate).st_mode & 511 == 384
     await store.db.close()
 
 
