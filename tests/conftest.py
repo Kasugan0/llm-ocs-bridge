@@ -28,11 +28,24 @@ _TEST_ENV = {
     "LLM_FALLBACK_ENABLED": "false",
 }
 
+_PROXY_ENV = (
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_cache_path(tmp_path, monkeypatch):
     for name, value in _TEST_ENV.items():
         monkeypatch.setenv(name, value)
+    for name in _PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CACHE_PATH", str(tmp_path / "llm_ocs_bridge_test.sqlite3"))
     monkeypatch.setenv("ACCESS_TOKEN", "test-access-token")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
