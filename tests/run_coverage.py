@@ -7,8 +7,23 @@ from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LINE_BASELINE = Fraction(1257, 1312)
-BRANCH_BASELINE = Fraction(342, 386)
+LINE_BASELINE = Fraction(1373, 1427)
+BRANCH_BASELINE = Fraction(413, 462)
+FILE_BASELINES = {
+    "src/llm_ocs_bridge/__init__.py": (Fraction(0), Fraction(0)),
+    "src/llm_ocs_bridge/app.py": (Fraction(108, 109), Fraction(25, 26)),
+    "src/llm_ocs_bridge/cache.py": (Fraction(88, 92), Fraction(14, 18)),
+    "src/llm_ocs_bridge/config.py": (Fraction(126, 133), Fraction(32, 38)),
+    "src/llm_ocs_bridge/llm.py": (Fraction(192, 208), Fraction(85, 98)),
+    "src/llm_ocs_bridge/main.py": (Fraction(227, 237), Fraction(82, 92)),
+    "src/llm_ocs_bridge/metrics.py": (Fraction(33, 33), Fraction(2, 2)),
+    "src/llm_ocs_bridge/models.py": (Fraction(22, 23), Fraction(1, 2)),
+    "src/llm_ocs_bridge/questions.py": (Fraction(87, 90), Fraction(43, 46)),
+    "src/llm_ocs_bridge/search.py": (Fraction(128, 132), Fraction(48, 50)),
+    "src/llm_ocs_bridge/service.py": (Fraction(177, 179), Fraction(47, 50)),
+    "src/llm_ocs_bridge/storage.py": (Fraction(167, 173), Fraction(32, 38)),
+    "src/llm_ocs_bridge/utils.py": (Fraction(18, 18), Fraction(2, 2)),
+}
 
 
 def check_report(report):
@@ -25,6 +40,8 @@ def check_report(report):
         failures.append(
             "report must include every runtime module and only runtime code"
         )
+    if set(FILE_BASELINES) != expected:
+        failures.append("frozen per-module baselines do not match runtime modules")
     if not report.get("meta", {}).get("branch_coverage"):
         failures.append("branch collection is missing")
     totals = report.get("totals", {})
@@ -39,6 +56,28 @@ def check_report(report):
             failures.append(f"per-module {field} is missing")
         elif sum(values) != totals.get(field):
             failures.append(f"per-module {field} disagrees with totals")
+    for name, entry in files.items():
+        summary = entry.get("summary", {})
+        line_baseline, branch_baseline = FILE_BASELINES.get(
+            name, (Fraction(0), Fraction(0))
+        )
+        for label, covered, total, baseline in (
+            ("line", "covered_lines", "num_statements", line_baseline),
+            ("branch", "covered_branches", "num_branches", branch_baseline),
+        ):
+            count, size = summary.get(covered), summary.get(total)
+            if (
+                not isinstance(count, int)
+                or not isinstance(size, int)
+                or not 0 <= count <= size
+            ):
+                failures.append(
+                    f"{name} {label} coverage data is missing or invalid"
+                )
+            elif size and Fraction(count, size) < baseline:
+                failures.append(
+                    f"{name} {label} coverage {count}/{size} is below {baseline}"
+                )
     for label, covered, total, baseline in (
         ("line", "covered_lines", "num_statements", LINE_BASELINE),
         ("branch", "covered_branches", "num_branches", BRANCH_BASELINE),

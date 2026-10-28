@@ -37,6 +37,32 @@ def test_coverage_gate_rejects_each_regression(report, field):
     assert run_coverage.check_report(report)
 
 
+def test_coverage_gate_rejects_module_below_floor(report):
+    name = next(
+        name
+        for name, baselines in run_coverage.FILE_BASELINES.items()
+        if any(baselines)
+    )
+    summaries = [entry["summary"] for entry in report["files"].values()]
+    for summary in summaries:
+        summary.update(
+            covered_lines=1000,
+            num_statements=1000,
+            covered_branches=1000,
+            num_branches=1000,
+        )
+    report["files"][name]["summary"].update(
+        covered_lines=0,
+        num_statements=10,
+        covered_branches=0,
+        num_branches=10,
+    )
+    for field in report["totals"]:
+        report["totals"][field] = sum(summary[field] for summary in summaries)
+    failures = run_coverage.check_report(report)
+    assert failures and all(name in failure for failure in failures)
+
+
 def test_coverage_gate_rejects_forged_totals(report):
     report["totals"]["covered_lines"] += 1
     assert run_coverage.check_report(report)
