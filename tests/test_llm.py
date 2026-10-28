@@ -13,6 +13,8 @@ from llm_ocs_bridge.llm import (
     ProviderProtocolError,
     ResponseTooLargeError,
     TransientLLMError,
+    _sanitize_text,
+    validate_answer,
 )
 from llm_ocs_bridge.questions import normalize_query
 
@@ -415,3 +417,68 @@ async def test_error_status_reuses_the_connection(settings, status_server):
 
     assert len(set(sockets)) == 1
     await answerer.aclose()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("普通答案", "普通答案"),
+        ("氢#氧", "氢#氧"),
+        ("好的，答案是：H2O", "H2O"),
+        ("好的", ""),
+        ("以下是答案：氢", "氢"),
+        ("答案是氧", "氧"),
+        ("答案为 42", "42"),
+        ("答案：正确", "正确"),
+        ("The answer is 42", "42"),
+        ("answer: yes", "yes"),
+        ("```\n氢\n```", "氢"),
+        ("```text\n氢\n```", "氢"),
+        ("**氢**", "氢"),
+        ("*氢*", "氢"),
+        ("`氢`", "氢"),
+        ("$H_2O$", "H_2O"),
+        ("$$E=mc^2$$", "E=mc^2"),
+        ('"氢"', "氢"),
+        ("“氢”", "氢"),
+        ("「氢」", "氢"),
+        ("**`氢`**", "氢"),
+        ("好的，**`氢`**", "氢"),
+        ("a```b", "a```b"),
+        ("```a```b```", "a```b"),
+        ("  氢  ", "氢"),
+    ],
+)
+def test_sanitize_text_strips_answer_wrapping(raw, expected):
+    assert _sanitize_text(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("answer", "question_type", "expected"),
+    [
+        ("氢", "completion", True),
+        ("氢#氧", "completion", True),
+        ("a```b", "completion", False),
+        ("答案：x", "completion", False),
+        ("自由文本", "open", True),
+        ("```\n自由文本\n```", "open", False),
+        ("好的，自由文本", "open", False),
+    ],
+)
+def test_validate_answer_rejects_residual_free_text_markup(
+    answer, question_type, expected
+):
+    assert validate_answer(answer, question_type) is expected
+
+
+@pytest.mark.asyncio
+async def test_answer_retries_when_sanitized_answer_is_invalid(settings):
+    answerer = LLMAnswerer(settings)
+    answerer._call_model = AsyncMock(
+        side_effect=['{"answers":["好的，"]}', '{"answers":["氢"]}']
+    )
+
+    answer = await answerer.answer(normalize_query("题目____", "", "completion"), [])
+
+    assert answer == "氢"
+    assert answerer._call_model.await_count == 2
