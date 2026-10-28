@@ -49,7 +49,10 @@ def test_missing_exa_key_is_allowed_with_fallback(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
     from llm_ocs_bridge import config as config
 
-    config.validate_check_settings(config.load_settings(environ=os.environ))
+    settings = config.load_settings(environ=os.environ)
+    assert settings.exa_api_key is None
+    assert settings.llm_fallback_enabled is True
+    config.validate_check_settings(settings)
 
 
 @pytest.mark.parametrize(
