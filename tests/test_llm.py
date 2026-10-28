@@ -241,6 +241,19 @@ def test_prompt_uses_system_rules_and_json_data():
     assert json.loads(messages[1]["content"])["evidence"] == evidence
 
 
+@pytest.mark.parametrize("images", [(), ("https://x/a.png",)])
+def test_build_messages_appends_format_reminder(images):
+    messages = LLMAnswerer._build_messages(
+        "题目", "A.选项", "single", "", images=images
+    )
+
+    assert len(messages) == 3
+    assert messages[2] == {
+        "role": "user",
+        "content": "只输出一个 JSON 对象，不要输出任何其他字符。",
+    }
+
+
 @pytest.mark.asyncio
 async def test_answer_retries_transient_failures_with_exponential_backoff(
     settings, monkeypatch

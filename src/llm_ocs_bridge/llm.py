@@ -14,6 +14,8 @@ from .utils import normalize_text
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+_FORMAT_REMINDER = "只输出一个 JSON 对象，不要输出任何其他字符。"
+
 AttemptHook = Callable[[], Awaitable[None]]
 
 
@@ -239,6 +241,7 @@ class LLMAnswerer:
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
+            {"role": "user", "content": _FORMAT_REMINDER},
         ]
 
 
