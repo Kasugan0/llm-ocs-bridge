@@ -52,7 +52,8 @@ def test_normalize_answer_payload_single_strict():
 def test_normalize_answer_payload_multiple_strict():
     assert normalize_answer_payload({"answers": ["A", "C"]}, "multiple") == "A#C"
     assert normalize_answer_payload({"answer": "A#C"}, "multiple") == "A#C"
-    assert normalize_answer_payload({"answers": "A and not C"}, "multiple") == ""
+    assert normalize_answer_payload({"answers": "A and not C"}, "multiple") == "A"
+    assert normalize_answer_payload({"answers": "not an option"}, "multiple") == ""
 
 
 @pytest.mark.parametrize(
@@ -77,7 +78,8 @@ def test_normalize_answer_payload_judgement_strict():
     assert normalize_answer_payload({"answer": True}, "judgement") == "正确"
     assert normalize_answer_payload({"answer": False}, "judgement") == "错误"
     assert normalize_answer_payload({"answer": "正确"}, "judgement") == "正确"
-    assert normalize_answer_payload({"answer": "不对"}, "judgement") == ""
+    assert normalize_answer_payload({"answer": "不对"}, "judgement") == "错误"
+    assert normalize_answer_payload({"answer": "不知道"}, "judgement") == ""
 
 
 def test_normalize_answer_payload_completion_requires_answers_array():

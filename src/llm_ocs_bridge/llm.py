@@ -246,6 +246,40 @@ class LLMAnswerer:
 
 
 _OPTION_RE = re.compile(r"[A-H]")
+_LETTER_PREFIX_RE = re.compile(r"^([A-H])(?:$|[.、．,，\s：:])")
+
+_VERDICT_VARIANTS = {
+    "是": "正确",
+    "对": "正确",
+    "正确": "正确",
+    "确定": "正确",
+    "√": "正确",
+    "对的": "正确",
+    "是的": "正确",
+    "正确的": "正确",
+    "true": "正确",
+    "t": "正确",
+    "yes": "正确",
+    "y": "正确",
+    "1": "正确",
+    "非": "错误",
+    "否": "错误",
+    "错": "错误",
+    "错误": "错误",
+    "×": "错误",
+    "x": "错误",
+    "错的": "错误",
+    "不对": "错误",
+    "不正确的": "错误",
+    "不正确": "错误",
+    "不是": "错误",
+    "不是的": "错误",
+    "false": "错误",
+    "f": "错误",
+    "no": "错误",
+    "n": "错误",
+    "0": "错误",
+}
 
 
 def format_search_context(
@@ -278,8 +312,10 @@ def normalize_answer_payload(payload: object, question_type: str) -> str:
         value = _pick_field(payload, "answer")
         if not isinstance(value, str):
             return ""
-        normalized = normalize_text(value).upper()
-        return normalized if _OPTION_RE.fullmatch(normalized) else ""
+        sanitized = _sanitize_text(value)
+        return _option_letter(sanitized.upper()) or _VERDICT_VARIANTS.get(
+            sanitized.lower(), ""
+        )
 
     if question_type == "multiple":
         tokens = _normalize_option_list(_pick_field(payload, "answers", "answer"))
@@ -291,15 +327,7 @@ def normalize_answer_payload(payload: object, question_type: str) -> str:
             return "正确" if value else "错误"
         if not isinstance(value, str):
             return ""
-        normalized = normalize_text(value)
-        if normalized in {"正确", "错误"}:
-            return normalized
-        lower = normalized.lower()
-        if lower == "true":
-            return "正确"
-        if lower == "false":
-            return "错误"
-        return ""
+        return _VERDICT_VARIANTS.get(_sanitize_text(value).lower(), "")
 
     if question_type == "completion":
         value = _pick_field(payload, "answers")
@@ -336,9 +364,9 @@ def validate_answer(
             and all(token in allowed for token in tokens)
         )
     if question_type == "single":
-        return bool(
-            _OPTION_RE.fullmatch(value) and value in allowed_option_labels(options)
-        )
+        if _OPTION_RE.fullmatch(value):
+            return value in allowed_option_labels(options)
+        return value in {"正确", "错误"} and _judgement_pair(options)
     if question_type == "judgement":
         return value in {"正确", "错误"}
     if question_type == "completion":
@@ -410,17 +438,29 @@ def _valid_free_text(text: str) -> bool:
     )
 
 
+def _option_letter(normalized: str) -> str:
+    match = _LETTER_PREFIX_RE.match(normalized)
+    return match.group(1) if match else ""
+
+
+def _judgement_pair(options: Sequence[str]) -> bool:
+    verdicts = {
+        _VERDICT_VARIANTS.get(normalize_text(option).lower())
+        for option in options
+    }
+    return len(options) == 2 and verdicts == {"正确", "错误"}
+
+
 def _normalize_option_list(value: object) -> list[str]:
     if isinstance(value, str):
-        tokens = normalize_text(value).upper().split("#")
+        items = _sanitize_text(value).upper().split("#")
     elif isinstance(value, Sequence) and not isinstance(value, bytes):
         if any(not isinstance(item, str) for item in value):
             return []
-        tokens = [normalize_text(item).upper() for item in value]
+        items = [_sanitize_text(item).upper() for item in value]
     else:
         return []
-    if not tokens or any(not _OPTION_RE.fullmatch(token) for token in tokens):
+    letters = [_option_letter(item) for item in items]
+    if not items or "" in letters or len(letters) != len(set(letters)):
         return []
-    if len(tokens) != len(set(tokens)):
-        return []
-    return sorted(tokens)
+    return sorted(letters)

@@ -15,6 +15,7 @@ from llm_ocs_bridge.llm import (
     ResponseTooLargeError,
     TransientLLMError,
     _sanitize_text,
+    normalize_answer_payload,
     validate_answer,
 )
 from llm_ocs_bridge.models import MediaItem
@@ -489,6 +490,15 @@ def test_validate_answer_rejects_residual_free_text_markup(
     assert validate_answer(answer, question_type) is expected
 
 
+def test_validate_answer_accepts_verdict_for_judgement_shaped_single():
+    assert validate_answer("正确", "single", ("对", "错"))
+    assert validate_answer("错误", "single", ("是的", "不是的"))
+    assert validate_answer("A", "single", ("对", "错"))
+    assert not validate_answer("正确", "single", ("A.甲", "B.乙"))
+    assert not validate_answer("正确", "single", ("对", "错", "不知道"))
+    assert not validate_answer("C", "single", ("对", "错"))
+
+
 @pytest.mark.asyncio
 async def test_answer_routes_image_media_to_vision_model(settings):
     settings = replace(settings, vision_model="vision-x")
@@ -557,3 +567,109 @@ async def test_answer_retries_when_sanitized_answer_is_invalid(settings):
 
     assert answer == "氢"
     assert answerer._call_model.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("对", "正确"),
+        ("正确", "正确"),
+        ("√", "正确"),
+        ("T", "正确"),
+        ("Y", "正确"),
+        ("是", "正确"),
+        ("yes", "正确"),
+        ("Yes", "正确"),
+        ("true", "正确"),
+        ("TRUE", "正确"),
+        ("确定", "正确"),
+        ("对的", "正确"),
+        ("是的", "正确"),
+        ("正确的", "正确"),
+        ("1", "正确"),
+        ("错", "错误"),
+        ("错误", "错误"),
+        ("×", "错误"),
+        ("F", "错误"),
+        ("N", "错误"),
+        ("否", "错误"),
+        ("no", "错误"),
+        ("No", "错误"),
+        ("false", "错误"),
+        ("FALSE", "错误"),
+        ("非", "错误"),
+        ("X", "错误"),
+        ("x", "错误"),
+        ("错的", "错误"),
+        ("不对", "错误"),
+        ("不正确", "错误"),
+        ("不正确的", "错误"),
+        ("不是", "错误"),
+        ("不是的", "错误"),
+        ("0", "错误"),
+        ("**对**", "正确"),
+        ("答案是对", "正确"),
+        ("对错", ""),
+        ("maybe", ""),
+        ("不知道", ""),
+        ("", ""),
+    ],
+)
+def test_normalize_judgement_accepts_verdict_variants(raw, expected):
+    assert normalize_answer_payload({"answer": raw}, "judgement") == expected
+
+
+def test_normalize_judgement_keeps_bool():
+    assert normalize_answer_payload({"answer": True}, "judgement") == "正确"
+    assert normalize_answer_payload({"answer": False}, "judgement") == "错误"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("B", "B"),
+        ("b", "B"),
+        ("B. Guido", "B"),
+        ("B.选项", "B"),
+        ("B、答案", "B"),
+        ("B x", "B"),
+        ("B，文本", "B"),
+        ("B：选项", "B"),
+        ("**B**", "B"),
+        ("好的，答案是C", "C"),
+        ("`A`", "A"),
+        ("对", "正确"),
+        ("错", "错误"),
+        ("不是的", "错误"),
+        ("非", "错误"),
+        ("确定", "正确"),
+        ("1", "正确"),
+        ("0", "错误"),
+        ("T", "正确"),
+        ("F", "F"),
+        ("BG", ""),
+        ("10", ""),
+        ("BUT", ""),
+        ("I", ""),
+        ("", ""),
+    ],
+)
+def test_normalize_single_extracts_letter_from_echoes(raw, expected):
+    assert normalize_answer_payload({"answer": raw}, "single") == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"answers": ["A. x", "C. y"]}, "A#C"),
+        ({"answers": ["a", "c"]}, "A#C"),
+        ({"answers": "A. x#C. y"}, "A#C"),
+        ({"answers": "**A#C**"}, "A#C"),
+        ({"answer": "B. x"}, "B"),
+        ({"answers": ["A", "A"]}, ""),
+        ({"answers": ["A", "xy"]}, ""),
+        ({"answers": "A#9"}, ""),
+    ],
+)
+def test_normalize_multiple_extracts_letters_from_echoes(payload, expected):
+    assert normalize_answer_payload(payload, "multiple") == expected
