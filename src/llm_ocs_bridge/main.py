@@ -128,6 +128,18 @@ def _check_env_file() -> Path:
             raise CheckError(f".env 权限必须为 0600，当前为 {mode:04o}")
     return path
 
+def _check_image_config(settings: Settings) -> None:
+    if not settings.vision_model:
+        _status("WARN", "VISION_MODEL 未配置：图片题会直接返回错误")
+        return
+    needed = settings.max_images * (-(-settings.max_image_bytes // 3) * 4)
+    if settings.max_request_bytes < needed:
+        _status(
+            "WARN",
+            f"MAX_REQUEST_BYTES={settings.max_request_bytes} "
+            f"小于图片请求上限 {needed}，较大的图片题会被拒绝",
+        )
+
 
 def _load_settings(
     env_path: Path | None = None,
@@ -421,6 +433,7 @@ async def _check() -> int:
 
         _check_cache_path(settings.cache_path)
         _status("OK", f"缓存路径: {settings.cache_path}")
+        _check_image_config(settings)
 
         stage = "OpenAI"
         await _check_llm(settings)

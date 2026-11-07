@@ -271,6 +271,49 @@ def test_check_outputs_importable_ocs_config(settings, tmp_path, monkeypatch, ca
     assert wrapper["handler"].endswith("[res.msg, undefined]")
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"vision_model": ""}, "VISION_MODEL 未配置"),
+        ({"vision_model": "vision-x", "max_request_bytes": 262144}, "小于图片请求上限"),
+    ],
+)
+def test_check_warns_about_image_configuration(
+    settings, tmp_path, monkeypatch, capsys, overrides, message
+):
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(tmp_path, **overrides)
+
+    async def check_llm(_settings):
+        return None
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 0
+    assert message in capsys.readouterr().err
+
+
+def test_check_stays_quiet_when_image_configuration_is_usable(
+    settings, tmp_path, monkeypatch, capsys
+):
+    _env_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(tmp_path, vision_model="vision-x")
+
+    async def check_llm(_settings):
+        return None
+
+    monkeypatch.setattr(
+        main_module, "_load_settings", lambda *_args, **_kwargs: settings
+    )
+    monkeypatch.setattr(main_module, "_check_llm", check_llm)
+    assert asyncio.run(main_module._check()) == 0
+    assert "VISION_MODEL" not in capsys.readouterr().err
+
+
 def test_check_calls_exa_when_configured(settings, tmp_path, monkeypatch, capsys):
     _env_file(tmp_path)
     monkeypatch.chdir(tmp_path)
