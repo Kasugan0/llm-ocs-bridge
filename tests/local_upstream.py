@@ -86,12 +86,15 @@ def upstream_app(script):
                 else [
                     {
                         "id": "local-evidence",
-                        "title": "water formula authority",
+                        "title": action.get("title", "water formula authority"),
                         "url": "https://example.org/water",
-                        "highlights": [
-                            "water chemistry reference",
-                            "water formula is H2O; LATE-HIGHLIGHT-ANSWER",
-                        ],
+                        "highlights": action.get(
+                            "highlights",
+                            [
+                                "water chemistry reference",
+                                "water formula is H2O; LATE-HIGHLIGHT-ANSWER",
+                            ],
+                        ),
                     }
                 ]
             }

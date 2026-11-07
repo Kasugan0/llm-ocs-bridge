@@ -10,6 +10,19 @@ from llm_ocs_bridge.models import MediaItem, OCSQuery, SearchResult
 from llm_ocs_bridge.storage import Database
 
 
+def test_answer_protocol_revision_isolates_old_cached_answers(settings):
+    query = OCSQuery("题目", (), "completion")
+    old_key = cache_key(
+        "answer", "ocs-answer-v2", cache_module.SEARCH_REVISION,
+        *cache_module.question_cache_parts(query),
+        settings.openai_base_url, settings.openai_model,
+        settings.search_result_limit, settings.min_search_quality_score,
+        settings.max_evidence_bytes, settings.prompt_version,
+        settings.search_cache_version, "search",
+    )
+    assert answer_key(query, "search", settings) != old_key
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [0, 1, 2, 10, 100])
 async def test_recent_search_preserves_ties_across_index_and_restart(
@@ -351,6 +364,30 @@ async def test_sqlite_files_are_private_after_connect(settings, tmp_path):
     for candidate in candidates:
         assert os.stat(candidate).st_mode & 511 == 384
     await store.db.close()
+
+
+def test_answer_keys_use_selected_model(settings):
+    text = OCSQuery("题目")
+    image = replace(text, media=(MediaItem("image", "https://x/a.png"),))
+    first = replace(settings, vision_model="vision-one")
+    second = replace(first, vision_model="vision-two")
+    assert answer_key(image, "search", first) != answer_key(image, "search", second)
+    assert answer_key(text, "search", first) == answer_key(text, "search", second)
+    assert answer_key(image, "search", first) == answer_key(
+        image, "search", replace(first, openai_model="other-text")
+    )
+
+
+def test_media_owner_participates_in_both_cache_keys(settings):
+    queries = [
+        OCSQuery(
+            "题目", ("甲", "乙"), "single",
+            (MediaItem("image", "https://x/a.png", owner),),
+        )
+        for owner in (None, 0, 1)
+    ]
+    assert len({search_key(query, settings) for query in queries}) == 3
+    assert len({answer_key(query, "search", settings) for query in queries}) == 3
 
 
 def test_media_urls_participate_in_cache_keys(settings):

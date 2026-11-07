@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 class MediaItem:
     kind: str
     url: str
+    option_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

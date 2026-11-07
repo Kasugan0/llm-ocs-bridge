@@ -9,8 +9,8 @@ import statistics
 import time
 from pathlib import Path
 
+from llm_ocs_bridge.answers import format_search_context
 from llm_ocs_bridge.cache import encode_search_results
-from llm_ocs_bridge.llm import format_search_context
 from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.search import ExaSearch, question_terms
 

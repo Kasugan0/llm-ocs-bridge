@@ -7,7 +7,7 @@ import httpx
 import pytest
 from local_upstream import local_server
 
-from llm_ocs_bridge.llm import validate_answer
+from llm_ocs_bridge.answers import validate_answer
 
 
 def test_live_cases_have_distinct_valid_expected_answers():
@@ -72,7 +72,7 @@ async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
     current = {"query": e2e_live._QUERY}
     original = httpx.AsyncHTTPTransport.handle_async_request
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", original)
-    with local_server("upstream", {"llm": [{}, {}]}) as upstream:
+    with local_server("upstream", {"llm": [{}, {"answer": "maybe"}]}) as upstream:
         e2e_live.instrument_transport(
             replace(settings, openai_base_url=upstream), budget, attempts, current
         )

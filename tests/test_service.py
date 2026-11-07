@@ -41,6 +41,20 @@ async def controlled_runtime(settings):
 
 
 @pytest.mark.asyncio
+async def test_cache_race_recheck_does_not_count_another_lookup(settings):
+    async with controlled_runtime(settings) as (runtime, entered, release):
+        runtime.answer_cache.get = AsyncMock(side_effect=[None, "A"])
+        query = OCSQuery("water", ("A.H2O", "B.CO2"), "single")
+        result = await service_module.answer(runtime, query)
+        assert result.answer == "A"
+        runtime.search_client.search.assert_not_awaited()
+        runtime.answerer._call_model.assert_not_awaited()
+        counters = await runtime.metrics_store.get_counters()
+        assert counters["answer_cache_misses"] == 1
+        assert counters["answer_cache_hits"] == 0
+
+
+@pytest.mark.asyncio
 async def test_concurrent_fallback_answers_share_one_model_call(settings):
     settings = replace(settings, exa_api_key="", llm_fallback_enabled=True)
     async with controlled_runtime(settings) as (runtime, entered, release):

@@ -15,9 +15,9 @@ from time import perf_counter
 import httpx
 import uvicorn
 
+from llm_ocs_bridge.answers import normalize_answer_payload, validate_answer
 from llm_ocs_bridge.app import create_app
 from llm_ocs_bridge.config import load_settings
-from llm_ocs_bridge.llm import normalize_answer_payload, validate_answer
 
 _TOKEN = "isolated-live-e2e"
 _QUERY = {
@@ -61,12 +61,12 @@ _CASES = (
             "options": [],
             "type": "completion",
         },
-        "H#O",
+        '["H", "O"]',
     ),
     (
         "image-logo",
         {
-            "title": '图中展示的是哪家公司的标志？'
+            "title": "图中展示的是哪家公司的标志？"
             '<img src="https://www.baidu.com/img/bd_logo1.png">',
             "options": [
                 "A. 谷歌 Google",
@@ -121,13 +121,13 @@ def instrument_transport(settings, budget, attempts, current):
 def _valid_success(body, query):
     try:
         content = json.loads(body)["choices"][0]["message"]["content"]
-        from llm_ocs_bridge.llm import LLMAnswerer
+        from llm_ocs_bridge.answers import parse_payload
 
-        payload = LLMAnswerer._parse_payload(content)
-        answer = normalize_answer_payload(payload, query["type"])
-        return validate_answer(
-            answer, query["type"], tuple(query.get("options", ()))
+        payload = parse_payload(content)
+        answer = normalize_answer_payload(
+            payload, query["type"], tuple(query.get("options", ()))
         )
+        return validate_answer(answer, query["type"], tuple(query.get("options", ())))
     except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
         return False
 

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from .models import OCSQuery
+
 SEARCH_REVISION = "v4"
 
 
@@ -133,6 +135,13 @@ class Settings(StorageSettings):
     max_active_answers: int
     max_answer_waiters: int
     answer_timeout_seconds: float
+
+    def model_for(self, query: OCSQuery) -> str:
+        return (
+            self.vision_model
+            if any(item.kind == "image" for item in query.media)
+            else self.openai_model
+        )
 
 
 def _environment(

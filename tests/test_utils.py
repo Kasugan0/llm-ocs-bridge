@@ -1,11 +1,13 @@
+import json
+
 import pytest
 
-from llm_ocs_bridge.cache import cache_key, question_cache_parts, serialize_options
-from llm_ocs_bridge.llm import (
+from llm_ocs_bridge.answers import (
     format_search_context,
     normalize_answer_payload,
     validate_answer,
 )
+from llm_ocs_bridge.cache import cache_key, question_cache_parts, serialize_options
 from llm_ocs_bridge.models import OCSQuery, SearchResult
 from llm_ocs_bridge.search import render_search_query
 from llm_ocs_bridge.utils import sanitize_error, truncate_utf8
@@ -85,12 +87,39 @@ def test_normalize_answer_payload_judgement_strict():
 def test_normalize_answer_payload_completion_requires_answers_array():
     assert (
         normalize_answer_payload({"answers": ["第一空", "第二空"]}, "completion")
-        == "第一空#第二空"
+        == '["第一空", "第二空"]'
     )
     assert (
-        normalize_answer_payload({"answers": ["唯一答案"]}, "completion") == "唯一答案"
+        normalize_answer_payload({"answers": ["唯一答案"]}, "completion")
+        == '["唯一答案"]'
     )
     assert normalize_answer_payload({"answer": "随便一段话"}, "completion") == ""
+
+
+def test_normalize_answer_payload_completion_encodes_unsafe_separators():
+    answers = ["a===b", "c#d", "e---f", "###", "x|y", "p;q", "r；s"]
+    answer = normalize_answer_payload({"answers": answers}, "completion")
+
+    assert json.loads(answer) == answers
+    assert validate_answer(answer, "completion")
+
+
+def test_normalize_answer_payload_completion_uses_json_for_all_elements():
+    assert (
+        normalize_answer_payload({"answers": ["第一空", "第二空"]}, "completion")
+        == '["第一空", "第二空"]'
+    )
+    assert (
+        normalize_answer_payload({"answers": ["a#b", "c"]}, "completion")
+        == '["a#b", "c"]'
+    )
+
+
+def test_validate_answer_completion_accepts_encoded_array_string():
+    assert validate_answer('["a===b", "c#d"]', "completion")
+    assert not validate_answer('["a===b", ""]', "completion")
+    assert not validate_answer('["a===b", ["c"]]', "completion")
+    assert not validate_answer("a===b", "completion")
 
 
 def test_validate_answer_multiple():
@@ -107,7 +136,7 @@ def test_validate_answer_single_judgement_completion():
     assert validate_answer("正确", "judgement")
     assert validate_answer("错误", "judgement")
     assert not validate_answer("对", "judgement")
-    assert validate_answer("第一空#第二空", "completion")
+    assert validate_answer('["第一空", "第二空"]', "completion")
     assert not validate_answer("第一空##第二空", "completion")
 
 
@@ -154,7 +183,9 @@ def test_search_context_preserves_separators_and_byte_boundaries():
     first_bytes = len(first.encode("utf-8"))
     assert format_search_context(results) == expected
     for limit in range(len(encoded) + 2):
-        bounded = first if first_bytes < limit <= first_bytes + 2 else encoded[
-            :limit
-        ].decode("utf-8", errors="ignore")
+        bounded = (
+            first
+            if first_bytes < limit <= first_bytes + 2
+            else encoded[:limit].decode("utf-8", errors="ignore")
+        )
         assert format_search_context(results, max_bytes=limit) == bounded

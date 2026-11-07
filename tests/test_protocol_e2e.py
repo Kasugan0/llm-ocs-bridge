@@ -338,10 +338,11 @@ async def test_protocol_image_query_uses_vision_model(settings):
         content = llm["payload"]["messages"][1]["content"]
         assert json.loads(content[0]["text"])["title"] == "图中是什么公式"
         assert content[1:] == [
+            {"type": "text", "text": "题目图片："},
             {
                 "type": "image_url",
                 "image_url": {"url": "https://x/a.png"},
-            }
+            },
         ]
 
 

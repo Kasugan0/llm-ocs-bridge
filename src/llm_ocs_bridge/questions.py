@@ -29,6 +29,31 @@ _AUDIO_EXTENSIONS = frozenset({"mp3", "wav", "m4a", "ogg", "flac", "aac"})
 
 QUESTION_TYPES = frozenset({"single", "multiple", "judgement", "completion"})
 
+_JUDGEMENT_TRUE = frozenset(
+    {"是", "对", "正确", "确定", "√", "对的", "是的", "正确的", "true", "t", "yes", "1"}
+)
+_JUDGEMENT_FALSE = frozenset(
+    {
+        "非",
+        "否",
+        "错",
+        "错误",
+        "×",
+        "x",
+        "错的",
+        "不对",
+        "不正确的",
+        "不正确",
+        "不是",
+        "不是的",
+        "false",
+        "f",
+        "no",
+        "0",
+    }
+)
+_JUDGEMENT_WORD_RE = re.compile(r"[^\u2E80-\u9FFFA-Za-z0-9√×]")
+
 
 def extract_media(text: str) -> tuple[str, tuple[MediaItem, ...]]:
     media: list[MediaItem] = []
@@ -36,9 +61,7 @@ def extract_media(text: str) -> tuple[str, tuple[MediaItem, ...]]:
     def collect(match: re.Match[str]) -> str:
         tag, dq_url, sq_url, uq_url, md_url, bare_url = match.groups()
         if tag is not None:
-            url = next(
-                group for group in (dq_url, sq_url, uq_url) if group is not None
-            )
+            url = next(group for group in (dq_url, sq_url, uq_url) if group is not None)
             if url.startswith(("http://", "https://")):
                 kind = "audio" if tag.lower() in {"audio", "source"} else "image"
                 media.append(MediaItem(kind, url))
@@ -88,7 +111,7 @@ def _split_options(options: str | Sequence[str]) -> tuple[str, ...]:
         normalized = options.replace("\r\n", "\n").replace("\r", "\n")
         if not normalize_text(normalized):
             return ()
-        raw_items = re.split(r"[#\n]", normalized)
+        raw_items = normalized.split("\n")
     elif isinstance(options, Sequence):
         raw_items = list(options)
     else:
@@ -104,30 +127,40 @@ def allowed_option_labels(options: Sequence[str]) -> frozenset[str]:
 
 
 def _option_labels(options: Sequence[str]) -> list[str]:
-    explicit = [
-        match.group(1).upper() if (match := _OPTION_LABEL_RE.match(option)) else ""
-        for option in options
-    ]
-    used = {label for label in explicit if label}
-    labels: list[str] = []
-    for index, label in enumerate(explicit):
-        if not label:
-            label = _free_label(index, used)
-            used.add(label)
-        labels.append(label)
-    return labels
-
-
-def _free_label(start: int, used: set[str]) -> str:
-    for offset in range(8):
-        label = chr(ord("A") + (start + offset) % 8)
-        if label not in used:
-            return label
-    raise QuestionError("选项数量超过限制")
+    return [chr(ord("A") + index) for index in range(len(options))]
 
 
 def strip_option_label(option: str) -> str:
     return _OPTION_LABEL_RE.sub("", option)
+
+
+def judgement_word(text: str) -> str:
+    word = _JUDGEMENT_WORD_RE.sub("", normalize_text(text).lower())
+    if word in _JUDGEMENT_TRUE or word in _JUDGEMENT_FALSE:
+        return word
+    return _JUDGEMENT_WORD_RE.sub("", strip_option_label(text).lower())
+
+
+def judgement_verdict(text: str) -> str:
+    word = judgement_word(text)
+    if word in _JUDGEMENT_TRUE:
+        return "正确"
+    if word in _JUDGEMENT_FALSE:
+        return "错误"
+    return ""
+
+
+def effective_question_type(question_type: str, options: Sequence[str]) -> str:
+    if question_type == "single" and is_judgement_options(options):
+        return "judgement"
+    return question_type
+
+
+def is_judgement_options(options: Sequence[str]) -> bool:
+    return len(options) == 2 and {judgement_verdict(option) for option in options} == {
+        "正确",
+        "错误",
+    }
 
 
 class QuestionError(ValueError):
@@ -180,10 +213,10 @@ def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
     query = normalize_query(*_fields(body))
     title, media = extract_media(query.title)
     options = []
-    for option in query.options:
+    for index, option in enumerate(query.options):
         option_text, option_media = extract_media(option)
         options.append(option_text)
-        media += option_media
+        media += tuple(replace(item, option_index=index) for item in option_media)
     query = replace(
         query,
         title=title,

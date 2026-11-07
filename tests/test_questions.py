@@ -37,7 +37,7 @@ def test_parse_query_accepts_null_optional_fields(settings):
 
 
 def test_normalize_query_parses_options():
-    query = normalize_query("  题目   ", " A.1 # B.2 ", " single ")
+    query = normalize_query("  题目   ", " A.1 \n B.2 ", " single ")
     assert query == OCSQuery(
         title="题目",
         options=("A.1", "B.2"),
@@ -50,15 +50,30 @@ def test_normalize_query_accepts_newline_and_array_options():
     assert normalize_query("题目", ["甲", "乙"], "single").options == ("甲", "乙")
 
 
+@pytest.mark.parametrize("options", [("T", "F"), ("A.对", "B.错")])
+def test_judgement_options_preserve_bare_verdicts(options):
+    from llm_ocs_bridge.questions import is_judgement_options
+
+    assert is_judgement_options(options)
+
+
+def test_option_hash_is_content():
+    assert normalize_query("题目", "A. C#\nB. F#", "multiple").options == (
+        "A. C#",
+        "B. F#",
+    )
+
+
 def test_format_options_for_prompt_adds_missing_labels():
     assert format_options_for_prompt(("Apple", "B.香蕉", "Cherry")) == (
         "A.Apple#B.香蕉#C.Cherry"
     )
 
 
-def test_unlabeled_option_avoids_an_explicit_label():
-    assert format_options_for_prompt(("Apple", "A.答案")) == "B.Apple#A.答案"
+def test_option_labels_follow_positions_not_option_text():
+    assert format_options_for_prompt(("Apple", "A.答案")) == "A.Apple#B.答案"
     assert allowed_option_labels(("Apple", "A.答案")) == {"A", "B"}
+    assert allowed_option_labels(("B.红", "A.蓝")) == {"A", "B"}
 
 
 def test_option_labels_require_boundaries_and_follow_positions():
@@ -140,5 +155,6 @@ def test_parse_query_merges_title_and_option_media(settings):
     assert query.options == ("A.1", "B.2")
     assert query.media == (
         MediaItem("image", "https://x/a.png"),
-        MediaItem("image", "https://x/b.jpg"),
+        MediaItem("image", "https://x/a.png", option_index=0),
+        MediaItem("image", "https://x/b.jpg", option_index=1),
     )

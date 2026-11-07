@@ -81,7 +81,7 @@ def test_search_requires_exa_key_without_fallback():
             "/search",
             json={
                 "title": "test_missing_exa_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -125,7 +125,7 @@ def test_search_allows_llm_fallback_without_exa_key_when_enabled(monkeypatch):
             "/search",
             json={
                 "title": "test_missing_exa_with_fallback_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -161,7 +161,7 @@ def test_search_logs_error_on_search_failure(monkeypatch):
             "/search",
             json={
                 "title": "test_search_failure_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -205,7 +205,7 @@ def test_search_blocks_empty_evidence_without_fallback(monkeypatch):
             "/search",
             json={
                 "title": "test_search_empty_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -278,7 +278,7 @@ def test_search_returns_exa_header_on_live_hit(monkeypatch):
             "/search",
             json={
                 "title": "test_live_exa_hit_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -343,7 +343,7 @@ def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
             "/search",
             json={
                 "title": "test_cached_search_hit_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -352,7 +352,7 @@ def test_search_returns_cache_header_on_search_cache_hit(monkeypatch):
             "/search",
             json={
                 "title": "test_cached_search_hit_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -419,7 +419,7 @@ def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
             "/search",
             json={
                 "title": "test_semantic_search_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -428,7 +428,7 @@ def test_search_does_not_share_search_cache_across_option_sets(monkeypatch):
             "/search",
             json={
                 "title": "test_semantic_search_q",
-                "options": "A.甲#B.乙",
+                "options": "A.甲\nB.乙",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -478,7 +478,7 @@ def test_search_sets_llm_fallback_header_without_evidence(monkeypatch):
             "/search",
             json={
                 "title": "test_search_empty_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -515,7 +515,7 @@ def test_search_sets_llm_fallback_header_on_search_failure(monkeypatch):
             "/search",
             json={
                 "title": "test_search_failure_fallback_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -590,7 +590,7 @@ def test_stats_reports_search_success_and_llm_call(monkeypatch):
             "/search",
             json={
                 "title": "test_stats_success_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -606,7 +606,7 @@ def test_stats_reports_search_success_and_llm_call(monkeypatch):
     assert counters["search_cache_hits"] == 0
     assert counters["search_cache_misses"] == 1
     assert counters["answer_cache_hits"] == 0
-    assert counters["answer_cache_misses"] == 2
+    assert counters["answer_cache_misses"] == 1
     assert counters["llm_calls"] == 1
     assert counters["llm_fallbacks"] == 0
 
@@ -647,7 +647,7 @@ def test_stats_reports_fallback_call(monkeypatch):
             "/search",
             json={
                 "title": "test_stats_fallback_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -692,7 +692,7 @@ def test_search_answer_cache_hit_has_no_provider_header():
             "/search",
             json={
                 "title": "test_answer_cache_hit_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -756,7 +756,7 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
             "/search",
             json={
                 "title": "test_fallback_poison_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -771,7 +771,7 @@ def test_fallback_answer_cache_does_not_block_future_exa_hit(monkeypatch):
                 "/search",
                 json={
                     "title": "test_fallback_poison_q",
-                    "options": "A.1#B.2",
+                    "options": "A.1\nB.2",
                     "type": "single",
                 },
                 headers=AUTH_HEADERS,
@@ -839,7 +839,7 @@ def test_invalid_cached_answer_is_deleted_and_regenerated(monkeypatch):
             "/search",
             json={
                 "title": "Python question",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -913,7 +913,7 @@ def test_invalid_cached_search_payload_falls_through(monkeypatch):
             "/search",
             json={
                 "title": "test_invalid_cache_payload_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -997,7 +997,7 @@ def test_search_rejects_invalid_llm_answer(monkeypatch):
             "/search",
             json={
                 "title": "test_invalid_llm_answer_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,
@@ -1037,7 +1037,7 @@ def test_search_logs_error_on_llm_missing_key(monkeypatch):
             "/search",
             json={
                 "title": "test_llm_missing_q",
-                "options": "A.1#B.2",
+                "options": "A.1\nB.2",
                 "type": "single",
             },
             headers=AUTH_HEADERS,

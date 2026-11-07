@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from time import time
 
+from .answers import validate_answer
 from .cache import (
     AnswerCacheStore,
     SearchCacheStore,
@@ -15,7 +16,7 @@ from .cache import (
     search_key,
 )
 from .config import Settings, validate_runtime_settings
-from .llm import InvalidAnswerError, LLMAnswerer, MissingKeyError, validate_answer
+from .llm import InvalidAnswerError, LLMAnswerer, MissingKeyError
 from .metrics import MetricsStore
 from .models import OCSQuery, SearchResult
 from .search import ExaSearch
@@ -90,18 +91,21 @@ async def _cached_answer(
     runtime: Runtime,
     query: OCSQuery,
     mode: str,
+    *,
+    count: bool,
 ) -> str | None:
     key = answer_key(query, mode, runtime.settings)
     value = await runtime.answer_cache.get(key)
-    if value is None:
-        await runtime.metrics_store.incr(answer_cache_misses=1)
-        return None
-    if validate_answer(value, query.question_type, query.options):
-        await runtime.metrics_store.incr(answer_cache_hits=1)
+    if value is not None and validate_answer(value, query.question_type, query.options):
+        if count:
+            await runtime.metrics_store.incr(answer_cache_hits=1)
         return value
+    if count:
+        await runtime.metrics_store.incr(answer_cache_misses=1)
+    if value is None:
+        return None
 
     await runtime.answer_cache.delete(key)
-    await runtime.metrics_store.incr(answer_cache_misses=1)
     await runtime.metrics_store.log_error(
         "answer-cache",
         "InvalidCachedAnswer",
@@ -213,7 +217,7 @@ async def _generate_answer(
     await runtime.answer_cache.set(
         answer_key(query, cache_mode, settings),
         query,
-        settings.openai_model,
+        settings.model_for(query),
         settings.prompt_version,
         cache_mode,
         answer,
@@ -222,7 +226,7 @@ async def _generate_answer(
 
 
 async def _answer_query(runtime: Runtime, query: OCSQuery) -> AnswerResult:
-    cached = await _cached_answer(runtime, query, "search")
+    cached = await _cached_answer(runtime, query, "search", count=False)
     if cached is not None:
         return AnswerResult(answer=cached)
 
@@ -234,7 +238,7 @@ async def _answer_query(runtime: Runtime, query: OCSQuery) -> AnswerResult:
     if not runtime.settings.llm_fallback_enabled:
         return AnswerResult(error=evidence.error)
 
-    cached = await _cached_answer(runtime, query, "fallback")
+    cached = await _cached_answer(runtime, query, "fallback", count=True)
     if cached is not None:
         return AnswerResult(answer=cached)
     return await _generate_answer(runtime, query, [], "llm-fallback", "fallback", True)
@@ -261,12 +265,12 @@ async def _answer_request(
 ) -> AnswerResult:
     if runtime._closing:
         return AnswerResult(error="服务正在关闭")
-    cached = await _cached_answer(runtime, query, "search")
+    key = answer_key(query, "search", runtime.settings)
+    cached = await _cached_answer(runtime, query, "search", count=True)
     if cached is not None:
         return AnswerResult(answer=cached)
     if runtime._closing:
         return AnswerResult(error="服务正在关闭")
-    key = answer_key(query, "search", runtime.settings)
     task = runtime._answers.get(key)
     if runtime._waiters >= runtime.settings.max_answer_waiters or (
         task is None and len(runtime._answers) >= runtime.settings.max_active_answers
