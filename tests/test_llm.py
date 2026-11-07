@@ -249,8 +249,13 @@ def test_prompt_uses_system_rules_and_json_data():
     assert json.loads(messages[1]["content"])["evidence"] == evidence
 
 
-def test_build_messages_appends_format_reminder():
-    messages = build_messages(normalize_query("题目", "A.选项", "single"), "")
+@pytest.mark.parametrize(
+    "media", [(), (MediaItem("image", "https://x/a.png"),)]
+)
+def test_build_messages_appends_format_reminder(media):
+    messages = build_messages(
+        replace(normalize_query("题目", "A.选项", "single"), media=media), ""
+    )
 
     assert len(messages) == 3
     assert messages[2] == {

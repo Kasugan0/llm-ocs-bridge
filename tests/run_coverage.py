@@ -12,10 +12,10 @@ BRANCH_BASELINE = Fraction(479, 518)
 FILE_BASELINES = {
     "src/llm_ocs_bridge/__init__.py": (Fraction(0), Fraction(0)),
     "src/llm_ocs_bridge/answers.py": (Fraction(162, 164), Fraction(80, 82)),
-    "src/llm_ocs_bridge/images.py": (Fraction(28, 29), Fraction(11, 12)),
     "src/llm_ocs_bridge/app.py": (Fraction(108, 109), Fraction(25, 26)),
     "src/llm_ocs_bridge/cache.py": (Fraction(88, 92), Fraction(14, 18)),
     "src/llm_ocs_bridge/config.py": (Fraction(132, 139), Fraction(32, 38)),
+    "src/llm_ocs_bridge/images.py": (Fraction(28, 29), Fraction(11, 12)),
     "src/llm_ocs_bridge/llm.py": (Fraction(89, 93), Fraction(28, 30)),
     "src/llm_ocs_bridge/main.py": (Fraction(227, 237), Fraction(82, 92)),
     "src/llm_ocs_bridge/metrics.py": (Fraction(33, 33), Fraction(2, 2)),
