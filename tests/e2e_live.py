@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import multiprocessing
+import os
 import socket
+import struct
 import subprocess
 import tempfile
+import zlib
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
@@ -25,7 +29,27 @@ _QUERY = {
     "options": ["A. Guido van Rossum", "B. Linus Torvalds"],
     "type": "single",
 }
-_MAX_ATTEMPTS = 16
+
+
+def _solid_png(red: int, green: int, blue: int, size: int = 64) -> str:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    rows = b"".join(b"\x00" + bytes((red, green, blue)) * size for _ in range(size))
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+_RED_SQUARE = _solid_png(220, 20, 20)
+
+
+_MAX_ATTEMPTS = 20
 _CASES = (
     (
         "non-first-single",
@@ -78,7 +102,25 @@ _CASES = (
         },
         "B",
     ),
+    (
+        "image-ocs5-color",
+        {
+            "title": "图中的正方形是什么颜色？",
+            "options": ["A. 红色", "B. 绿色", "C. 蓝色"],
+            "type": "single",
+            "images": [_RED_SQUARE],
+            "suggestion_title": "图中的正方形是什么颜色？ [图片1]",
+            "suggestion_options": "A. 红色\nB. 绿色\nC. 蓝色",
+        },
+        "A",
+    ),
 )
+
+
+def drop_proxy_env() -> None:
+    for name in tuple(os.environ):
+        if name.lower().endswith("_proxy"):
+            os.environ.pop(name)
 
 
 def reserve_attempt(budget):
@@ -143,6 +185,7 @@ def failure(mode, case, reason):
 
 
 def serve(connection, settings, budget):
+    drop_proxy_env()
     asyncio.run(serve_async(connection, settings, budget))
 
 
@@ -352,9 +395,11 @@ async def check(
     return result
 
 
-def check_cases(port, mode, settings, budget):
+def check_cases(port, mode, settings, budget, only=""):
     results = []
     for case, query, expected in _CASES:
+        if only and case != only:
+            continue
         if budget.value >= _MAX_ATTEMPTS:
             results.append(failure(mode, case, "attempt budget exhausted"))
             break
@@ -370,7 +415,7 @@ def check_cases(port, mode, settings, budget):
     return results
 
 
-def check_mode(context, settings, mode, budget):
+def check_mode(context, settings, mode, budget, only=""):
     with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
         live = replace(
             settings,
@@ -387,7 +432,7 @@ def check_mode(context, settings, mode, budget):
         try:
             if not connection.poll(30):
                 raise TimeoutError("Live E2E server did not become ready")
-            results = check_cases(connection.recv(), mode, live, budget)
+            results = check_cases(connection.recv(), mode, live, budget, only)
         except Exception as exc:
             results.append(failure(mode, "startup", type(exc).__name__))
         finally:
@@ -407,9 +452,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm-paid", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--case", default="")
     args = parser.parse_args()
     if not args.confirm_paid:
         parser.error("Real upstream calls require --confirm-paid")
+    drop_proxy_env()
     root = Path(__file__).resolve().parents[1]
     env_path = root / ".env"
     before = hashlib.sha256(env_path.read_bytes()).digest()
@@ -421,7 +468,7 @@ def main():
     budget = context.Value("i", 0)
     results = []
     for mode in ("search", "fallback"):
-        results.extend(check_mode(context, settings, mode, budget))
+        results.extend(check_mode(context, settings, mode, budget, args.case))
         if budget.value >= _MAX_ATTEMPTS:
             break
     unchanged = hashlib.sha256(env_path.read_bytes()).digest() == before
@@ -434,7 +481,7 @@ def main():
         "env_unchanged": unchanged,
         "results": results,
         "passed": unchanged
-        and len(results) == 2 * len(_CASES)
+        and len(results) == 2 * (1 if args.case else len(_CASES))
         and all(row["passed"] for row in results),
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2))

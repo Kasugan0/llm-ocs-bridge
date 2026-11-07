@@ -11,7 +11,7 @@ from llm_ocs_bridge.answers import validate_answer
 
 
 def test_live_cases_have_distinct_valid_expected_answers():
-    assert len(e2e_live._CASES) == 5
+    assert len(e2e_live._CASES) == 6
     assert {query["type"] for _, query, _ in e2e_live._CASES} == {
         "single",
         "multiple",
@@ -23,17 +23,28 @@ def test_live_cases_have_distinct_valid_expected_answers():
     assert e2e_live._CASES[0][2] != "A"
 
 
-def test_live_budget_rejects_the_seventeenth_attempt():
+def test_live_image_case_uses_the_ocs5_protocol():
+    case = {name: query for name, query, _ in e2e_live._CASES}["image-ocs5-color"]
+
+    assert case["images"] == [e2e_live._RED_SQUARE]
+    assert case["images"][0].startswith("data:image/png;base64,")
+    assert "[图片1]" in case["suggestion_title"]
+    assert case["options"] == case["suggestion_options"].split("\n")
+
+
+def test_live_budget_rejects_the_attempt_after_the_limit():
     budget = multiprocessing.get_context("spawn").Value("i", 0)
-    for _ in range(16):
+    for _ in range(e2e_live._MAX_ATTEMPTS):
         e2e_live.reserve_attempt(budget)
     with pytest.raises(RuntimeError, match="budget exhausted"):
         e2e_live.reserve_attempt(budget)
-    assert budget.value == 16
+    assert budget.value == e2e_live._MAX_ATTEMPTS
 
 
 def test_live_cases_stop_at_shared_budget(settings, monkeypatch):
-    budget = multiprocessing.get_context("spawn").Value("i", 15)
+    budget = multiprocessing.get_context("spawn").Value(
+        "i", e2e_live._MAX_ATTEMPTS - 1
+    )
     called = []
 
     async def check(port, mode, query, expected, retries, case):
@@ -67,7 +78,9 @@ def test_live_runner_records_safe_case_failure(settings, monkeypatch):
 async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
     settings, monkeypatch
 ):
-    budget = multiprocessing.get_context("spawn").Value("i", 14)
+    budget = multiprocessing.get_context("spawn").Value(
+        "i", e2e_live._MAX_ATTEMPTS - 2
+    )
     attempts = []
     current = {"query": e2e_live._QUERY}
     original = httpx.AsyncHTTPTransport.handle_async_request
@@ -99,7 +112,7 @@ async def test_live_instrumentation_counts_real_transport_and_blocks_budget(
         {"provider": "llm", "status": 200, "invalid_answer": False},
         {"provider": "llm", "status": 200, "invalid_answer": True},
     ]
-    assert budget.value == 16
+    assert budget.value == e2e_live._MAX_ATTEMPTS
 
 
 @pytest.mark.asyncio
