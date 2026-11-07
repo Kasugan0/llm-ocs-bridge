@@ -99,10 +99,14 @@ class LLMAnswerer:
     ) -> str:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds)
-
         if on_attempt is not None:
             await on_attempt()
+        body = await self._post_completions(messages, model)
+        return _parse_completion(body)
 
+    async def _post_completions(
+        self, messages: list[dict[str, object]], model: str
+    ) -> bytes:
         try:
             async with self._client.stream(
                 "POST",
@@ -118,47 +122,54 @@ class LLMAnswerer:
                     "max_tokens": self.settings.max_llm_output_tokens,
                 },
             ) as response:
-                content_length = response.headers.get("Content-Length")
-                if content_length is not None:
-                    try:
-                        declared_bytes = int(content_length)
-                    except ValueError:
-                        declared_bytes = None
-                    if (
-                        declared_bytes is not None
-                        and declared_bytes > self.settings.max_llm_response_bytes
-                    ):
-                        raise ResponseTooLargeError("LLM 响应超过大小限制")
-
-                chunks: list[bytes] = []
-                total_bytes = 0
-                async for chunk in response.aiter_bytes():
-                    total_bytes += len(chunk)
-                    if total_bytes > self.settings.max_llm_response_bytes:
-                        raise ResponseTooLargeError("LLM 响应超过大小限制")
-                    chunks.append(chunk)
+                body = await self._read_body(response)
                 # 状态码放在读完响应体之后。提前抛出会让 stream() 在对方还停在
                 # SEND_BODY 时关闭连接，httpcore 因此无法把它放回连接池。
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status == 429 or status >= 500:
-                raise TransientLLMError(f"LLM HTTP {status}") from exc
-            raise ProviderProtocolError(f"LLM HTTP {status}") from exc
+            raise _status_error(exc.response.status_code) from exc
         except httpx.TransportError as exc:
             raise TransientLLMError(type(exc).__name__) from exc
+        return body
 
-        try:
-            data = json.loads(b"".join(chunks))
-            content = data["choices"][0]["message"]["content"]
-        except (
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-            KeyError,
-            IndexError,
-            TypeError,
-        ) as exc:
-            raise ProviderProtocolError("LLM 响应格式不合法") from exc
-        if not isinstance(content, str):
-            raise ProviderProtocolError("LLM 响应格式不合法")
-        return content.strip()
+    async def _read_body(self, response: httpx.Response) -> bytes:
+        limit = self.settings.max_llm_response_bytes
+        if _declared_bytes(response) > limit:
+            raise ResponseTooLargeError("LLM 响应超过大小限制")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            chunks.append(chunk)
+            if total > limit:
+                raise ResponseTooLargeError("LLM 响应超过大小限制")
+        return b"".join(chunks)
+
+
+def _status_error(status: int) -> LLMError:
+    if status == 429 or status >= 500:
+        return TransientLLMError(f"LLM HTTP {status}")
+    return ProviderProtocolError(f"LLM HTTP {status}")
+
+
+def _declared_bytes(response: httpx.Response) -> int:
+    try:
+        return int(response.headers.get("Content-Length", ""))
+    except ValueError:
+        return 0
+
+
+def _parse_completion(body: bytes) -> str:
+    try:
+        content = json.loads(body)["choices"][0]["message"]["content"]
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        KeyError,
+        IndexError,
+        TypeError,
+    ) as exc:
+        raise ProviderProtocolError("LLM 响应格式不合法") from exc
+    if not isinstance(content, str):
+        raise ProviderProtocolError("LLM 响应格式不合法")
+    return content.strip()

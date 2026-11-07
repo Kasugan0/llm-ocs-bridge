@@ -80,7 +80,8 @@ def test_semantic_score_long_question_uses_bounded_token_scan(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [5, None])
 async def test_exa_search_maps_results_and_uses_full_query_semantics(
-    settings, limit,
+    settings,
+    limit,
 ):
     highlight = (
         "Guido van Rossum is widely recognized as the creator of Python. "
@@ -107,7 +108,7 @@ async def test_exa_search_maps_results_and_uses_full_query_semantics(
         question_type="single",
     )
     with patch.object(search, "_get_client", return_value=client):
-        results, score = await search.search(query, limit)
+        results, score = await search.search(query, limit, question_terms(query))
 
     assert results == [
         SearchResult(
@@ -153,7 +154,8 @@ async def test_exa_search_low_quality_results_return_empty(
 
     search = ExaSearch(replace(settings, exa_api_key="test-key"))
     with patch.object(search, "_get_client", return_value=client):
-        results, score = await search.search(OCSQuery(title="test"), 5)
+        query = OCSQuery(title="test")
+        results, score = await search.search(query, 5, question_terms(query))
 
     assert results == []
     assert score < 0.4
@@ -232,7 +234,7 @@ def test_exa_search_without_limit_does_not_send_num_results(settings):
 
     async def run() -> None:
         with patch.object(search, "_get_client", return_value=client):
-            await search.search(OCSQuery(title="题目"), None)
+            await search.search(OCSQuery(title="题目"), None, frozenset({"题目"}))
 
     import asyncio
 
@@ -281,7 +283,7 @@ async def test_exa_search_timeout_cancels_request(settings):
         patch.object(search, "_get_client", return_value=client),
         pytest.raises(TimeoutError),
     ):
-        await search.search(OCSQuery(title="题目"), None)
+        await search.search(OCSQuery(title="题目"), None, frozenset({"题目"}))
 
     assert cancelled.is_set()
 
@@ -342,7 +344,8 @@ async def test_relevance_corpus(settings, title, snippet, usable):
     )
     search = ExaSearch(replace(settings, exa_api_key="synthetic-key"))
     with patch.object(search, "_get_client", return_value=client):
-        results, _score = await search.search(OCSQuery(title=title), 5)
+        query = OCSQuery(title=title)
+        results, _score = await search.search(query, 5, question_terms(query))
     assert bool(results) is usable
 
 
@@ -378,13 +381,12 @@ async def test_all_highlights_are_used_and_irrelevant_items_are_removed(
     search = ExaSearch(
         replace(settings, exa_api_key="synthetic-key", min_search_quality_score=0)
     )
+    query = OCSQuery(title="水的化学式是什么？")
     with patch.object(search, "_get_client", return_value=client):
-        results, _score = await search.search(
-            OCSQuery(title="水的化学式是什么？"), None
-        )
+        results, _score = await search.search(query, None, module.question_terms(query))
     assert len(results) == 1
     assert results[0].snippet == "Introduction\n水的化学式是 H2O。"
-    terms.assert_called_once()
+    terms.assert_called_once_with(query)
 
 
 @pytest.mark.asyncio
@@ -408,6 +410,7 @@ async def test_zero_quality_threshold_does_not_allow_zero_relevance(settings):
         replace(settings, exa_api_key="synthetic-key", min_search_quality_score=0)
     )
     with patch.object(search, "_get_client", return_value=client):
-        results, score = await search.search(OCSQuery(title="quantum mechanics"), None)
+        query = OCSQuery(title="quantum mechanics")
+        results, score = await search.search(query, None, question_terms(query))
     assert results == []
     assert score == 0

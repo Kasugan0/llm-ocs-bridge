@@ -157,7 +157,7 @@ async def test_concurrent_search_miss_fallbacks_share_one_model_call(settings):
         started = asyncio.Event()
         release_search = asyncio.Event()
 
-        async def search(query, limit):
+        async def search(query, limit, terms):
             started.set()
             await release_search.wait()
             return [], 0

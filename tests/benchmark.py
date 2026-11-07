@@ -49,7 +49,7 @@ async def serve_async(connection: Connection, directory: str) -> None:
     app = create_app(settings)
     original_lifespan = app.router.lifespan_context
 
-    async def search(query: OCSQuery, limit: int | None):
+    async def search(query: OCSQuery, limit: int | None, terms: frozenset[str]):
         if query == _FALLBACK_QUERY:
             return [], 0
         await asyncio.sleep(0.1)

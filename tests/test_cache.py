@@ -20,12 +20,18 @@ from llm_ocs_bridge.storage import Database
 def test_answer_protocol_revision_isolates_old_cached_answers(settings):
     query = OCSQuery("题目", (), "completion")
     old_key = cache_key(
-        "answer", "ocs-answer-v2", cache_module.SEARCH_REVISION,
+        "answer",
+        "ocs-answer-v2",
+        cache_module.SEARCH_REVISION,
         *cache_module.question_cache_parts(query),
-        settings.openai_base_url, settings.openai_model,
-        settings.search_result_limit, settings.min_search_quality_score,
-        settings.max_evidence_bytes, settings.prompt_version,
-        settings.search_cache_version, "search",
+        settings.openai_base_url,
+        settings.openai_model,
+        settings.search_result_limit,
+        settings.min_search_quality_score,
+        settings.max_evidence_bytes,
+        settings.prompt_version,
+        settings.search_cache_version,
+        "search",
     )
     assert answer_key(query, "search", settings) != old_key
 
@@ -388,7 +394,9 @@ def test_answer_keys_use_selected_model(settings):
 def test_media_owner_participates_in_both_cache_keys(settings):
     queries = [
         OCSQuery(
-            "题目", ("甲", "乙"), "single",
+            "题目",
+            ("甲", "乙"),
+            "single",
             (MediaItem("image", "https://x/a.png", owner),),
         )
         for owner in (None, 0, 1)
@@ -468,25 +476,36 @@ def test_cache_parts_hash_image_payloads(settings):
     assert hashlib.sha256(payload.encode()).hexdigest() in parts[3][0]
 
 
-def test_decode_search_results_discards_malformed_fields():
+def test_decode_search_results_round_trips_encoded_payload():
+    from llm_ocs_bridge.cache import decode_search_results, encode_search_results
+
+    results = [
+        SearchResult("valid", "https://example.com", "evidence", "exa", "2024-01-01"),
+        SearchResult("second", "https://example.org", "evidence", "exa"),
+    ]
+    assert decode_search_results(encode_search_results(results)) == results
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{bad json",
+        '{"title":"not a list"}',
+        '[{"title":"missing url","snippet":"s"}]',
+        '[{"title":"missing snippet","url":"https://example.com"}]',
+        "[1]",
+    ],
+)
+def test_decode_search_results_rejects_payload_that_breaks_encoding_shape(payload):
     from llm_ocs_bridge.cache import decode_search_results
 
-    payload = (
-        '[{"title":"valid","url":"https://example.com",'
-        '"snippet":"evidence","source":"exa"},'
-        '{"title":null,"url":"https://example.com","snippet":"evidence"},'
-        '{"title":"bad url","url":"https://[invalid","snippet":"evidence"}]'
-    )
-    assert decode_search_results(payload) == [
-        SearchResult(
-            title="valid", url="https://example.com", snippet="evidence", source="exa"
-        )
-    ]
+    assert decode_search_results(payload) == []
 
 
 @pytest.mark.asyncio
 async def test_metrics_sanitize_error_messages(settings, tmp_path):
     from llm_ocs_bridge import metrics as metrics_module
+
     MetricsStore = metrics_module.MetricsStore
     settings = replace(settings, max_error_message_length=32)
     store = MetricsStore(

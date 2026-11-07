@@ -137,12 +137,25 @@ async def _resolve_evidence(
     runtime: Runtime,
     query: OCSQuery,
 ) -> Evidence:
-    settings = runtime.settings
-    if not question_terms(query):
+    terms = question_terms(query)
+    if not terms:
         return Evidence(
             [], "llm-fallback", "题目没有可供检索的文字，且未启用 LLM fallback"
         )
-    key = search_key(query, settings)
+    key = search_key(query, runtime.settings)
+    cached = await _cached_evidence(runtime, key)
+    if cached is not None:
+        return cached
+    if not runtime.search_client.enabled:
+        return Evidence(
+            [],
+            "llm-fallback",
+            "EXA_API_KEY is required when LLM fallback is disabled",
+        )
+    return await _live_evidence(runtime, query, key, terms)
+
+
+async def _cached_evidence(runtime: Runtime, key: str) -> Evidence | None:
     cached_payload = await runtime.search_cache.get(key)
     if cached_payload is not None:
         evidence = decode_search_results(cached_payload)
@@ -151,31 +164,28 @@ async def _resolve_evidence(
             return Evidence(evidence, "cache")
         await runtime.metrics_store.incr(search_cache_misses=1)
         await runtime.search_cache.delete(key)
-        if runtime.search_client.enabled:
-            await runtime.metrics_store.incr(search_requests=1)
     else:
         counters = {"search_cache_misses": 1}
         if runtime.search_client.enabled:
             counters["search_requests"] = 1
         await runtime.metrics_store.incr(**counters)
+    return None
 
-    if not runtime.search_client.enabled:
-        return Evidence(
-            [],
-            "llm-fallback",
-            "EXA_API_KEY is required when LLM fallback is disabled",
-        )
 
+async def _live_evidence(
+    runtime: Runtime,
+    query: OCSQuery,
+    key: str,
+    terms: frozenset[str],
+) -> Evidence:
     try:
         evidence, quality_score = await runtime.search_client.search(
-            query,
-            settings.search_result_limit,
+            query, runtime.settings.search_result_limit, terms
         )
     except Exception as exc:  # noqa: BLE001
         await runtime.metrics_store.incr(search_failures=1)
         await runtime.metrics_store.log_error("search", type(exc).__name__, str(exc))
         return Evidence([], "llm-fallback", "Exa 搜索失败，且未启用 LLM fallback")
-
     if not evidence:
         await runtime.metrics_store.incr(search_empty_results=1)
         return Evidence(
@@ -183,7 +193,6 @@ async def _resolve_evidence(
             "llm-fallback",
             "Exa 未返回可用证据，且未启用 LLM fallback",
         )
-
     await runtime.metrics_store.incr(search_successes=1)
     await runtime.search_cache.set(
         key,
@@ -191,7 +200,7 @@ async def _resolve_evidence(
         runtime.search_client.name,
         quality_score,
         encode_search_results(evidence),
-        settings.search_cache_version,
+        runtime.settings.search_cache_version,
     )
     return Evidence(evidence, runtime.search_client.name)
 

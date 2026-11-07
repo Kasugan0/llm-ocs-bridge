@@ -6,7 +6,7 @@ import time
 from collections.abc import Sequence
 
 from .config import SEARCH_REVISION, Settings
-from .models import OCSQuery, SearchResult, is_valid_search_result
+from .models import OCSQuery, SearchResult
 from .storage import Database
 from .utils import normalize_text
 
@@ -187,35 +187,18 @@ def encode_search_results(results: list[SearchResult]) -> str:
 
 def decode_search_results(payload: str) -> list[SearchResult]:
     try:
-        data = json.loads(payload)
-    except (json.JSONDecodeError, TypeError):
+        return [
+            SearchResult(
+                item["title"],
+                item["url"],
+                item["snippet"],
+                item.get("source", ""),
+                item.get("published_at", ""),
+            )
+            for item in json.loads(payload)
+        ]
+    except (json.JSONDecodeError, TypeError, AttributeError, KeyError):
         return []
-    if not isinstance(data, list):
-        return []
-
-    results: list[SearchResult] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        title = item.get("title")
-        url = item.get("url")
-        snippet = item.get("snippet")
-        source = item.get("source", "cache")
-        published_at = item.get("published_at", "")
-        if not all(isinstance(value, str) for value in (title, url, snippet)):
-            continue
-        if not isinstance(source, str) or not isinstance(published_at, str):
-            continue
-        result = SearchResult(
-            title=title,
-            url=url,
-            snippet=snippet,
-            source=source,
-            published_at=published_at,
-        )
-        if is_valid_search_result(result):
-            results.append(result)
-    return results
 
 
 def serialize_options(options: Sequence[str]) -> str:

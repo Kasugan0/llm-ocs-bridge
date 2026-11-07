@@ -41,6 +41,7 @@ class ExaSearch:
         self,
         query: OCSQuery,
         limit: int | None,
+        terms: frozenset[str],
     ) -> tuple[list[SearchResult], float]:
         client = self._get_client()
         kwargs: dict[str, object] = {
@@ -56,7 +57,6 @@ class ExaSearch:
         if limit is not None:
             raw_results = raw_results[:limit]
         results = self._map_results(raw_results)
-        terms = question_terms(query)
         scored = [
             (result, relevance)
             for result in results
