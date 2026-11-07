@@ -74,6 +74,8 @@ LLM_FALLBACK_ENABLED=false
 
 其他配置通常保持 [.env.example](.env.example) 中的默认值即可。
 
+`ANSWER_TIMEOUT_SECONDS` 是服务端单次答题总预算，默认为 55 秒，接受任意有限正数。OCS 客户端的请求超时默认是 60 秒，可在客户端配置中调整。建议服务端预算小于客户端的实际请求超时，为响应传输和资源清理留出余量。需要更长答题时间时，例如将服务端预算设为 120 秒，应同时调大客户端超时并保留余量。
+
 ## 检查配置
 
 运行：
@@ -119,6 +121,8 @@ OCS 通过 `GM_xmlhttpRequest` 访问本机 HTTP 服务。如果浏览器提示�
 @grant GM_xmlhttpRequest
 @connect 127.0.0.1
 ```
+
+`@connect` 必须与生成的题库 URL 主机一致：`HOST=127.0.0.1` 时用 `127.0.0.1`，`HOST=::1` 时用 `::1`，使用局域网地址或域名时改为对应主机。修改 `HOST` 后需同步更新用户脚本元信息，否则请求会被跨域权限拦截。
 
 ## 启动和停止
 
@@ -206,7 +210,7 @@ chmod 600 .env
 1. `uv run llm-ocs-bridge` 仍在运行。
 2. OCS 配置中的地址与当前 `HOST`、`PORT` 一致。
 3. 修改端口后已经重新运行 `check` 并重新导入 JSON。
-4. OCS 用户脚本具有 `GM_xmlhttpRequest` 和 `@connect 127.0.0.1` 权限。
+4. OCS 用户脚本具有 `GM_xmlhttpRequest` 和与题库 URL 主机一致的 `@connect` 权限。
 5. 防火墙或安全软件没有阻止浏览器访问 localhost。
 
 ### 启动时提示端口已被占用

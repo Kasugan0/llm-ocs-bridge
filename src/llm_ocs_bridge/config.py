@@ -186,7 +186,7 @@ def load_settings(
         "MAX_REQUEST_BYTES": "33554432",
         "MAX_ACTIVE_ANSWERS": "8",
         "MAX_ANSWER_WAITERS": "64",
-        "ANSWER_TIMEOUT_SECONDS": "120",
+        "ANSWER_TIMEOUT_SECONDS": "55",
         **_environment(env_path, environ),
     }
     return Settings(
