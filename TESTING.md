@@ -58,4 +58,6 @@ uv run python tests/e2e_live.py --confirm-paid --case image-ocs5-color --output 
 
 两者都证明服务端、base64 协议和 `VISION_MODEL` 全链路可用，但不代表真实课程截图（复杂图表、长公式）的识别正确率。
 
+脚本还会跑一组不产生任何上游调用的校验用例，覆盖鉴权失败、非法 JSON、非 UTF-8、请求体超限、图片格式与数量与大小、`[图片N]` 越界、未知题型、单选多选缺选项、空题干，以及缺少 `VISION_MODEL`。每例都断言响应符合 OCS 契约（HTTP 200 且 `code` 为 0）、不携带 provider，且上游调用与 `search_requests`、`llm_calls` 计数均无变化。这些用例不消耗出站预算，因此可以单独反复运行。
+
 脚本会清除 `*_proxy` 环境变量，因为部分代理变量（例如 `NODE_USE_ENV_PROXY`）会被 httpx 当作代理地址解析并导致启动失败。需要代理才能访问上游时，请在脚本外显式配置受支持的变量。

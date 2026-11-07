@@ -21,7 +21,7 @@ import uvicorn
 
 from llm_ocs_bridge.answers import normalize_answer_payload, validate_answer
 from llm_ocs_bridge.app import create_app
-from llm_ocs_bridge.config import load_settings
+from llm_ocs_bridge.config import Settings, load_settings
 
 _TOKEN = "isolated-live-e2e"
 _QUERY = {
@@ -134,6 +134,108 @@ _CASES = (
     ),
 )
 
+# 每个拒绝用例只发一次请求，必须零出站调用：不消耗预算，也不依赖 search/fallback 模式。
+_IMAGE_QUERY = {
+    "title": "图中是什么公式",
+    "options": ["A.甲", "B.乙"],
+    "type": "single",
+    "images": [_RED_SQUARE],
+    "suggestion_title": "图中是什么公式 [图片1]",
+    "suggestion_options": "A.甲\nB.乙",
+}
+_OVERSIZED_BODY = b'{"title":"' + b"a" * 4096 + b'"}'
+_OVERSIZED_IMAGE = "data:image/png;base64," + "A" * 4096
+_IMAGE_MESSAGES = {
+    "image-not-data-url": "图片必须是 png、jpeg、gif 或 webp 的 base64 data URL",
+    "image-bad-base64": "图片 base64 编码不合法",
+    "image-too-many": "图片数量超过限制",
+    "image-too-large": "图片超过大小限制",
+}
+
+
+def _rejections(settings: Settings) -> tuple[tuple[str, bytes, str], ...]:
+    def body(payload: dict[str, object]) -> bytes:
+        return json.dumps(payload).encode()
+
+    return (
+        ("body-invalid-json", b"{not json", "请求体必须是合法 JSON"),
+        ("body-not-object", b"[]", "请求体必须是 JSON 对象"),
+        ("body-not-utf8", b"\xff", "请求体必须是 UTF-8 编码"),
+        (
+            "image-not-data-url",
+            body(_IMAGE_QUERY | {"images": ["https://example.org/a.png"]}),
+            _IMAGE_MESSAGES["image-not-data-url"],
+        ),
+        (
+            "image-bad-base64",
+            body(_IMAGE_QUERY | {"images": ["data:image/png;base64,iVBORw0KGgo=="]}),
+            _IMAGE_MESSAGES["image-bad-base64"],
+        ),
+        (
+            "image-too-many",
+            body(_IMAGE_QUERY | {"images": [_RED_SQUARE] * (settings.max_images + 1)}),
+            _IMAGE_MESSAGES["image-too-many"],
+        ),
+        (
+            "placeholder-beyond-images",
+            body(_IMAGE_QUERY | {"suggestion_title": "图中是什么公式 [图片2]"}),
+            "图片占位符超出图片数量",
+        ),
+        (
+            "unknown-type",
+            body(_QUERY | {"type": "matrix"}),
+            "不支持的题型",
+        ),
+        (
+            "single-without-options",
+            body({"title": "题目", "type": "single"}),
+            "单选题和多选题必须提供有效选项",
+        ),
+        (
+            "multiple-without-options",
+            body({"title": "题目", "type": "multiple"}),
+            "单选题和多选题必须提供有效选项",
+        ),
+        ("empty-title", body({"title": "   "}), "题目不能为空"),
+    )
+
+
+def _auth_case():
+    return (("auth", json.dumps(_IMAGE_QUERY).encode(), "无效的访问令牌"),)
+
+
+_AUTH_CASES = {"auth"}
+
+
+def _image_rejections(settings: Settings) -> tuple[tuple[str, bytes, str], ...]:
+    return tuple(
+        (name, raw, message)
+        for name, raw, message in _rejections(settings)
+        if name in _IMAGE_MESSAGES
+    )
+
+
+def _without_vision(settings: Settings) -> Settings:
+    return replace(settings, vision_model="")
+
+
+def _with_tight_body_limit(settings: Settings) -> Settings:
+    return replace(settings, max_request_bytes=len(_OVERSIZED_BODY) - 1)
+
+
+def _with_tight_image_limit(settings: Settings) -> Settings:
+    return replace(settings, max_image_bytes=1024)
+
+
+# 缺少视觉模型时，图片题在解析之后才失败：改用无文字题干，确保拒绝发生在任何检索之前。
+_VISION_QUERY = {
+    "title": "",
+    "options": [],
+    "type": "",
+    "images": [_RED_SQUARE],
+    "suggestion_title": "[图片1]",
+}
+
 
 def drop_proxy_env() -> None:
     for name in tuple(os.environ):
@@ -202,13 +304,13 @@ def failure(mode, case, reason):
     }
 
 
-def serve(connection, settings, budget):
+def serve(connection, settings, budget, token=_TOKEN):
     drop_proxy_env()
-    asyncio.run(serve_async(connection, settings, budget))
+    asyncio.run(serve_async(connection, settings, budget, token))
 
 
-async def serve_async(connection, settings, budget):
-    app = create_app(settings)
+async def serve_async(connection, settings, budget, token=_TOKEN):
+    app = create_app(replace(settings, access_token=token))
     attempts = []
     current = {"query": _QUERY}
     original = instrument_transport(settings, budget, attempts, current)
@@ -243,7 +345,7 @@ async def serve_async(connection, settings, budget):
             httpx.AsyncHTTPTransport.handle_async_request = original
 
 
-async def curl(port, path, payload=None, token=_TOKEN):
+async def curl(port, path, payload=None, token=_TOKEN, data=None):
     command = [
         "curl",
         "--silent",
@@ -257,7 +359,7 @@ async def curl(port, path, payload=None, token=_TOKEN):
         "--header",
         f"X-Access-Token: {token}",
     ]
-    if payload is not None:
+    if payload is not None or data is not None:
         command.extend(
             ["--header", "Content-Type: application/json", "--data-binary", "@-"]
         )
@@ -268,9 +370,11 @@ async def curl(port, path, payload=None, token=_TOKEN):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    output, _ = await process.communicate(
-        json.dumps(payload).encode() if payload else b""
-    )
+    if data is not None:
+        sent = data
+    else:
+        sent = json.dumps(payload).encode() if payload else b""
+    output, _ = await process.communicate(sent)
     if process.returncode:
         raise RuntimeError(f"curl exited with {process.returncode}")
     header_bytes, body = output.split(b"\r\n\r\n", 1)
@@ -289,6 +393,54 @@ async def snapshot(port):
     if attempts["status"] != 200 or stats["status"] != 200:
         raise RuntimeError("Cannot collect live observations")
     return {"attempts": attempts["body"], "counters": stats["body"]["counters"]}
+
+
+def validate_rejection(result):
+    failures = []
+    response = result["response"]
+    if response["status"] != 200:
+        failures.append("rejection response is not HTTP 200")
+    if response["body"] != {"code": 0, "msg": result["expected"]}:
+        failures.append("rejection response violates OCS contract")
+    if response["provider"] is not None:
+        failures.append("rejection response carries a search provider")
+    before, after = result["snapshots"]["before"], result["snapshots"]["after"]
+    if after["attempts"] != before["attempts"]:
+        failures.append("rejection triggered upstream attempts")
+    for counter in ("search_requests", "llm_calls"):
+        if before["counters"].get(counter, 0) != after["counters"].get(counter, 0):
+            failures.append(f"rejection changed {counter}")
+    return failures
+
+
+async def check_rejection(port, case, data, expected):
+    snapshots = {"before": await snapshot(port)}
+    token = "" if case in _AUTH_CASES else _TOKEN
+    response = await curl(port, "/search", data=data, token=token)
+    snapshots["after"] = await snapshot(port)
+    result = {
+        "mode": "rejection",
+        "case": case,
+        "expected": expected,
+        "response": response,
+        "snapshots": snapshots,
+        "attempts": snapshots["after"]["attempts"],
+        "counters": snapshots["after"]["counters"],
+    }
+    result["failures"] = validate_rejection(result)
+    result["passed"] = not result["failures"]
+    return result
+
+
+def check_rejections(port, cases):
+    results = []
+    for case, data, expected in cases:
+        try:
+            results.append(asyncio.run(check_rejection(port, case, data, expected)))
+        except Exception as exc:
+            results.append(failure("rejection", case, type(exc).__name__))
+            break
+    return results
 
 
 def validate_case(result, expected_answer="A", max_retries=2):
@@ -466,6 +618,88 @@ def check_mode(context, settings, mode, budget, only=""):
     return results
 
 
+def zero_cost_cases(settings, only=""):
+    live = _without_vision(settings)
+    if only:
+        return _image_rejections(live)
+    return _auth_case() + _rejections(live) + (
+        (
+            "image-without-vision",
+            json.dumps(_VISION_QUERY).encode(),
+            "图片题未配置视觉模型",
+        ),
+    )
+
+
+def tight_body_cases():
+    return (("body-too-large", _OVERSIZED_BODY, "请求体超过大小限制"),)
+
+
+def tight_image_cases():
+    return (
+        (
+            "image-too-large",
+            json.dumps(_IMAGE_QUERY | {"images": [_OVERSIZED_IMAGE]}).encode(),
+            _IMAGE_MESSAGES["image-too-large"],
+        ),
+    )
+
+
+def check_zero_cost(context, settings, budget, only=""):
+    results = _run_rejections(
+        context, _without_vision(settings), budget, zero_cost_cases(settings, only)
+    )
+    if not only:
+        results += _run_rejections(
+            context, _with_tight_body_limit(settings), budget, tight_body_cases()
+        )
+        results += _run_rejections(
+            context, _with_tight_image_limit(settings), budget, tight_image_cases()
+        )
+    return results
+
+
+def _run_rejections(context, live, budget, cases, mode="rejection"):
+    results = []
+    with tempfile.TemporaryDirectory(dir=Path.home() / ".cache") as directory:
+        connection, child = context.Pipe()
+        process = context.Process(
+            target=serve,
+            args=(
+                child,
+                replace(live, cache_path=str(Path(directory) / "live.sqlite3")),
+                budget,
+            ),
+        )
+        process.start()
+        child.close()
+        try:
+            if not connection.poll(30):
+                raise TimeoutError("Zero-cost E2E server did not become ready")
+            results = check_rejections(connection.recv(), cases)
+        except Exception as exc:
+            results.append(failure(mode, "startup", type(exc).__name__))
+        finally:
+            if process.is_alive():
+                connection.send("stop")
+            process.join(20)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+            connection.close()
+        if process.exitcode != 0:
+            results.append(failure(mode, "shutdown", "unclean server exit"))
+    return results
+
+
+def expected_results(settings, case=""):
+    paid = 2 * (1 if case else len(_CASES))
+    zero_cost = len(zero_cost_cases(settings, case))
+    if not case:
+        zero_cost += len(tight_body_cases()) + len(tight_image_cases())
+    return paid + zero_cost
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm-paid", action="store_true")
@@ -484,7 +718,7 @@ def main():
     )
     context = multiprocessing.get_context("spawn")
     budget = context.Value("i", 0)
-    results = []
+    results = check_zero_cost(context, settings, budget, args.case)
     for mode in ("search", "fallback"):
         results.extend(check_mode(context, settings, mode, budget, args.case))
         if budget.value >= _MAX_ATTEMPTS:
@@ -499,7 +733,7 @@ def main():
         "env_unchanged": unchanged,
         "results": results,
         "passed": unchanged
-        and len(results) == 2 * (1 if args.case else len(_CASES))
+        and len(results) == expected_results(settings, args.case)
         and all(row["passed"] for row in results),
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2))
