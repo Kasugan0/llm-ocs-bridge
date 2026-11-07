@@ -119,6 +119,8 @@ class Settings(StorageSettings):
     search_result_limit: int | None
     max_llm_retries: int
     max_request_bytes: int
+    max_images: int
+    max_image_bytes: int
     max_title_length: int
     max_options_count: int
     max_option_length: int
@@ -179,6 +181,9 @@ def load_settings(
     env_path: Path | None = None, *, environ: Mapping[str, str | None] | None = None
 ) -> Settings:
     values = {
+        "MAX_IMAGES": "6",
+        "MAX_IMAGE_BYTES": "3145728",
+        "MAX_REQUEST_BYTES": "33554432",
         "MAX_ACTIVE_ANSWERS": "8",
         "MAX_ANSWER_WAITERS": "64",
         "ANSWER_TIMEOUT_SECONDS": "120",
@@ -208,6 +213,8 @@ def load_settings(
         search_result_limit=_optional_int(values, "SEARCH_RESULT_LIMIT"),
         max_llm_retries=_int(values, "MAX_LLM_RETRIES", minimum=0),
         max_request_bytes=_int(values, "MAX_REQUEST_BYTES"),
+        max_images=_int(values, "MAX_IMAGES"),
+        max_image_bytes=_int(values, "MAX_IMAGE_BYTES"),
         max_title_length=_int(values, "MAX_TITLE_LENGTH"),
         max_options_count=_int(values, "MAX_OPTIONS_COUNT", maximum=8),
         max_option_length=_int(values, "MAX_OPTION_LENGTH"),

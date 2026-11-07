@@ -55,6 +55,24 @@ async def test_cache_race_recheck_does_not_count_another_lookup(settings):
 
 
 @pytest.mark.asyncio
+async def test_image_answer_records_selected_model(settings):
+    from llm_ocs_bridge.models import MediaItem
+
+    async with controlled_runtime(replace(settings, vision_model="vision-x")) as (
+        runtime, entered, release
+    ):
+        release.set()
+        runtime.answer_cache.set = AsyncMock()
+        query = OCSQuery(
+            "water", ("A.H2O", "B.CO2"), "single",
+            (MediaItem("image", "https://x/a.png", 0),),
+        )
+        assert (await service_module.answer(runtime, query)).answer == "A"
+        assert runtime.answerer._call_model.call_args.args[1] == "vision-x"
+        assert runtime.answer_cache.set.call_args.args[2] == "vision-x"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_fallback_answers_share_one_model_call(settings):
     settings = replace(settings, exa_api_key="", llm_fallback_enabled=True)
     async with controlled_runtime(settings) as (runtime, entered, release):

@@ -6,6 +6,7 @@ from dataclasses import replace
 from urllib.parse import urlparse
 
 from .config import Settings
+from .images import ImageError, image_payloads
 from .models import MediaItem, OCSQuery
 from .utils import normalize_text
 
@@ -194,6 +195,20 @@ def _fields(
     return title_value, options_value, question_type_value
 
 
+def _suggestion(value: object) -> str:
+    if not isinstance(value, str):
+        raise QuestionError("建议题干必须是字符串")
+    return value
+
+
+def _suggestion_options(value: object) -> tuple[str, ...]:
+    if not isinstance(value, str | list):
+        raise QuestionError("建议选项必须是字符串或字符串数组")
+    if isinstance(value, list) and any(not isinstance(item, str) for item in value):
+        raise QuestionError("建议选项必须是字符串数组")
+    return _split_options(value)
+
+
 def validate_query(query: OCSQuery, settings: Settings) -> None:
     if len(query.title) > settings.max_title_length:
         raise QuestionError("题目超过长度限制")
@@ -201,6 +216,14 @@ def validate_query(query: OCSQuery, settings: Settings) -> None:
         raise QuestionError("选项数量超过限制")
     if any(len(option) > settings.max_option_length for option in query.options):
         raise QuestionError("选项超过长度限制")
+    if len(query.suggestion_title) > settings.max_title_length:
+        raise QuestionError("建议题干超过长度限制")
+    if len(query.suggestion_options) > settings.max_options_count:
+        raise QuestionError("建议选项数量超过限制")
+    if any(
+        len(option) > settings.max_option_length for option in query.suggestion_options
+    ):
+        raise QuestionError("建议选项超过长度限制")
     if query.question_type and query.question_type not in QUESTION_TYPES:
         raise QuestionError("不支持的题型")
     if query.question_type in {"single", "multiple"}:
@@ -211,6 +234,14 @@ def validate_query(query: OCSQuery, settings: Settings) -> None:
 
 def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
     query = normalize_query(*_fields(body))
+    suggestion_title = _suggestion(body.get("suggestion_title") or "")
+    suggestion_options = _suggestion_options(body.get("suggestion_options") or "")
+    try:
+        payloads = image_payloads(
+            body.get("images") or [], settings.max_images, settings.max_image_bytes
+        )
+    except ImageError as exc:
+        raise QuestionError(str(exc)) from exc
     title, media = extract_media(query.title)
     options = []
     for index, option in enumerate(query.options):
@@ -221,9 +252,19 @@ def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
         query,
         title=title,
         options=tuple(options),
-        media=tuple(dict.fromkeys(media)),
+        media=tuple(
+            item
+            for item in dict.fromkeys(media)
+            if not payloads or item.kind != "image"
+        )
+        + tuple(
+            MediaItem("image", payload, placeholder=f"[图片{index}]")
+            for index, payload in enumerate(payloads, start=1)
+        ),
+        suggestion_title=normalize_text(suggestion_title),
+        suggestion_options=suggestion_options,
     )
     validate_query(query, settings)
-    if not query.title:
+    if not (query.title or any(item.kind == "image" for item in query.media)):
         raise QuestionError("题目不能为空")
     return query

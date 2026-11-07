@@ -220,6 +220,13 @@ def _ocs_config(settings: Settings) -> list[dict[str, object]]:
                         ".includes(env.type) ? env.type : ''"
                     )
                 },
+                "images": {"handler": "return (env) => env.images || []"},
+                "suggestion_title": {
+                    "handler": "return (env) => env.suggestion_title || ''"
+                },
+                "suggestion_options": {
+                    "handler": "return (env) => env.suggestion_options || ''"
+                },
             },
             "handler": (
                 "return (res) => res.code === 1 "

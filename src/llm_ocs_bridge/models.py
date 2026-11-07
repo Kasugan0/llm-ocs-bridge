@@ -9,6 +9,7 @@ class MediaItem:
     kind: str
     url: str
     option_index: int | None = None
+    placeholder: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,8 @@ class OCSQuery:
     options: tuple[str, ...] = ()
     question_type: str = ""
     media: tuple[MediaItem, ...] = ()
+    suggestion_title: str = ""
+    suggestion_options: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

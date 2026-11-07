@@ -227,7 +227,17 @@ def question_cache_parts(query: OCSQuery) -> tuple[object, ...]:
         query.title,
         list(query.options),
         query.question_type,
-        [(item.kind, item.url, item.option_index) for item in query.media],
+        [
+            (
+                item.kind,
+                hashlib.sha256(item.url.encode("utf-8")).hexdigest(),
+                item.option_index,
+                item.placeholder,
+            )
+            for item in query.media
+        ],
+        query.suggestion_title,
+        list(query.suggestion_options),
     )
 
 
@@ -253,7 +263,7 @@ def _canonicalize(value: object) -> object:
 def answer_key(query: OCSQuery, mode: str, settings: Settings) -> str:
     return cache_key(
         "answer",
-        "ocs-answer-v3",
+        "ocs-answer-v4",
         SEARCH_REVISION,
         *question_cache_parts(query),
         settings.openai_base_url,

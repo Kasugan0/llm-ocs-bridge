@@ -7,19 +7,20 @@ from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LINE_BASELINE = Fraction(1450, 1500)
-BRANCH_BASELINE = Fraction(450, 495)
+LINE_BASELINE = Fraction(1548, 1591)
+BRANCH_BASELINE = Fraction(479, 518)
 FILE_BASELINES = {
     "src/llm_ocs_bridge/__init__.py": (Fraction(0), Fraction(0)),
     "src/llm_ocs_bridge/answers.py": (Fraction(162, 164), Fraction(80, 82)),
+    "src/llm_ocs_bridge/images.py": (Fraction(28, 29), Fraction(11, 12)),
     "src/llm_ocs_bridge/app.py": (Fraction(108, 109), Fraction(25, 26)),
     "src/llm_ocs_bridge/cache.py": (Fraction(88, 92), Fraction(14, 18)),
-    "src/llm_ocs_bridge/config.py": (Fraction(126, 133), Fraction(32, 38)),
+    "src/llm_ocs_bridge/config.py": (Fraction(132, 139), Fraction(32, 38)),
     "src/llm_ocs_bridge/llm.py": (Fraction(89, 93), Fraction(28, 30)),
     "src/llm_ocs_bridge/main.py": (Fraction(227, 237), Fraction(82, 92)),
     "src/llm_ocs_bridge/metrics.py": (Fraction(33, 33), Fraction(2, 2)),
-    "src/llm_ocs_bridge/models.py": (Fraction(23, 24), Fraction(1, 2)),
-    "src/llm_ocs_bridge/questions.py": (Fraction(120, 122), Fraction(55, 58)),
+    "src/llm_ocs_bridge/models.py": (Fraction(31, 32), Fraction(1, 2)),
+    "src/llm_ocs_bridge/questions.py": (Fraction(157, 159), Fraction(70, 72)),
     "src/llm_ocs_bridge/search.py": (Fraction(129, 132), Fraction(49, 50)),
     "src/llm_ocs_bridge/service.py": (Fraction(179, 181), Fraction(51, 54)),
     "src/llm_ocs_bridge/storage.py": (Fraction(167, 173), Fraction(32, 38)),

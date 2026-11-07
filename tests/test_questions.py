@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from llm_ocs_bridge.models import MediaItem, OCSQuery
@@ -33,6 +35,15 @@ def test_parse_query_rejects_invalid_fields(settings, payload, message):
 def test_parse_query_accepts_null_optional_fields(settings):
     assert parse_query(
         {"title": "q", "options": None, "type": None}, settings
+    ) == OCSQuery("q", (), "")
+    assert parse_query(
+        {
+            "title": "q",
+            "images": None,
+            "suggestion_title": None,
+            "suggestion_options": None,
+        },
+        settings,
     ) == OCSQuery("q", (), "")
 
 
@@ -158,3 +169,148 @@ def test_parse_query_merges_title_and_option_media(settings):
         MediaItem("image", "https://x/a.png", option_index=0),
         MediaItem("image", "https://x/b.jpg", option_index=1),
     )
+
+
+PNG = "data:image/png;base64,iVBORw0KGgo="
+JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+
+
+def _ocs5_body(**overrides):
+    return {
+        "title": "图中是什么公式",
+        "options": ["A.甲", "B.乙"],
+        "type": "single",
+        "images": [PNG, JPEG],
+        "suggestion_title": "图中是什么公式 [图片1]",
+        "suggestion_options": "A.甲\nB.乙 [图片2]",
+        **overrides,
+    }
+
+
+def test_parse_query_keeps_originals_and_ocs5_suggestions(settings):
+    query = parse_query(_ocs5_body(), settings)
+
+    assert query.title == "图中是什么公式"
+    assert query.options == ("A.甲", "B.乙")
+    assert query.suggestion_title == "图中是什么公式 [图片1]"
+    assert query.suggestion_options == ("A.甲", "B.乙 [图片2]")
+    assert query.media == (
+        MediaItem("image", PNG, placeholder="[图片1]"),
+        MediaItem("image", JPEG, placeholder="[图片2]"),
+    )
+
+
+def test_parse_query_accepts_suggestion_options_array(settings):
+    query = parse_query(
+        _ocs5_body(suggestion_options=["A.甲", "B.乙 [图片2]"]), settings
+    )
+
+    assert query.suggestion_options == ("A.甲", "B.乙 [图片2]")
+
+
+def test_parse_query_accepts_image_only_question(settings):
+    query = parse_query(
+        {
+            "title": "",
+            "options": [],
+            "type": "",
+            "images": [PNG],
+            "suggestion_title": "[图片1]",
+            "suggestion_options": "",
+        },
+        settings,
+    )
+
+    assert query.title == ""
+    assert query.suggestion_title == "[图片1]"
+    assert query.media == (MediaItem("image", PNG, placeholder="[图片1]"),)
+
+
+def test_parse_query_without_suggestions_keeps_old_shape(settings):
+    query = parse_query(
+        {"title": "题目", "options": ["A.1"], "type": "single"}, settings
+    )
+
+    assert query.suggestion_title == ""
+    assert query.suggestion_options == ()
+    assert query.media == ()
+
+
+def test_parse_query_preserves_repeated_identical_images(settings):
+    query = parse_query(
+        _ocs5_body(images=[PNG, PNG], suggestion_title="[图片1] 与 [图片2]"),
+        settings,
+    )
+
+    assert query.media == (
+        MediaItem("image", PNG, placeholder="[图片1]"),
+        MediaItem("image", PNG, placeholder="[图片2]"),
+    )
+
+
+def test_payloads_supersede_url_images_but_keep_audio(settings):
+    query = parse_query(
+        _ocs5_body(
+            title='题目 <img src="https://x/a.png"> <audio src="https://x/a.mp3">',
+            images=[PNG],
+        ),
+        settings,
+    )
+
+    assert query.title == "题目"
+    assert query.media == (
+        MediaItem("audio", "https://x/a.mp3"),
+        MediaItem("image", PNG, placeholder="[图片1]"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"images": PNG}, "图片必须是 data URL 字符串数组"),
+        ({"images": [1]}, "图片必须是 data URL 字符串数组"),
+        ({"images": ["data:image/png;base64,iVBORw0KGgo=="]}, "图片 base64 编码不合法"),
+        ({"suggestion_title": 1}, "建议题干必须是字符串"),
+        ({"suggestion_title": ["[图片1]"]}, "建议题干必须是字符串"),
+        ({"suggestion_options": 1}, "建议选项必须是字符串或字符串数组"),
+        ({"suggestion_options": {"a": "b"}}, "建议选项必须是字符串或字符串数组"),
+        ({"suggestion_options": ["A.甲", 1]}, "建议选项必须是字符串数组"),
+    ],
+)
+def test_parse_query_rejects_malformed_ocs5_fields(settings, overrides, message):
+    with pytest.raises(QuestionError, match=f"^{message}$"):
+        parse_query(_ocs5_body(**overrides), settings)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "settings_overrides", "message"),
+    [
+        ({"images": [PNG] * 3}, {"max_images": 2}, "图片数量超过限制"),
+        (
+            {"images": ["data:image/png;base64," + "A" * 8]},
+            {"max_image_bytes": 5},
+            "图片超过大小限制",
+        ),
+        ({"suggestion_title": "建议太长"}, {"max_title_length": 2}, "题目超过长度限制"),
+        (
+            {"title": "q", "options": [], "suggestion_title": "建议太长"},
+            {"max_title_length": 2},
+            "建议题干超过长度限制",
+        ),
+        (
+            {"options": ["A.甲"], "suggestion_options": ["A.甲", "B.乙"]},
+            {"max_options_count": 1},
+            "建议选项数量超过限制",
+        ),
+        (
+            {"options": ["甲"], "suggestion_options": ["A.甲乙"]},
+            {"max_option_length": 2},
+            "建议选项超过长度限制",
+        ),
+    ],
+)
+def test_parse_query_enforces_configured_image_and_suggestion_limits(
+    settings, overrides, settings_overrides, message
+):
+    with pytest.raises(QuestionError, match=f"^{message}$"):
+        parse_query(_ocs5_body(**overrides), replace(settings, **settings_overrides))

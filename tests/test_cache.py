@@ -1,11 +1,18 @@
 import asyncio
+import hashlib
+import json
 import os
 from dataclasses import replace
 
 import pytest
 
 from llm_ocs_bridge import cache as cache_module
-from llm_ocs_bridge.cache import answer_key, cache_key, search_key
+from llm_ocs_bridge.cache import (
+    answer_key,
+    cache_key,
+    question_cache_parts,
+    search_key,
+)
 from llm_ocs_bridge.models import MediaItem, OCSQuery, SearchResult
 from llm_ocs_bridge.storage import Database
 
@@ -405,6 +412,60 @@ def test_media_urls_participate_in_cache_keys(settings):
     assert answer_key(base, "search", settings) != answer_key(
         image_a, "search", settings
     )
+
+
+def _payload_query(payloads, **overrides):
+    return OCSQuery(
+        "图中是什么公式",
+        ("A.甲", "B.乙"),
+        "single",
+        tuple(
+            MediaItem("image", payload, placeholder=f"[图片{index}]")
+            for index, payload in enumerate(payloads, start=1)
+        ),
+        **overrides,
+    )
+
+
+def test_image_payloads_participate_in_both_cache_keys(settings):
+    a = "data:image/png;base64,iVBORw0KGgo="
+    b = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    assert search_key(_payload_query([a]), settings) != search_key(
+        _payload_query([b]), settings
+    )
+    assert answer_key(_payload_query([a]), "search", settings) != answer_key(
+        _payload_query([b]), "search", settings
+    )
+
+
+def test_repeated_identical_payloads_keep_distinct_cache_identity(settings):
+    a = "data:image/png;base64,iVBORw0KGgo="
+    assert search_key(_payload_query([a]), settings) != search_key(
+        _payload_query([a, a]), settings
+    )
+
+
+def test_suggestions_participate_in_both_cache_keys(settings):
+    base = _payload_query(["data:image/png;base64,iVBORw0KGgo="])
+    titled = replace(base, suggestion_title="题目 [图片1]")
+    optioned = replace(base, suggestion_options=("A.甲", "B.乙 [图片1]"))
+    assert len({search_key(query, settings) for query in (base, titled, optioned)}) == 3
+    assert (
+        len(
+            {
+                answer_key(query, "search", settings)
+                for query in (base, titled, optioned)
+            }
+        )
+        == 3
+    )
+
+
+def test_cache_parts_hash_image_payloads(settings):
+    payload = "data:image/png;base64,iVBORw0KGgo="
+    parts = question_cache_parts(_payload_query([payload]))
+    assert payload not in json.dumps(parts)
+    assert hashlib.sha256(payload.encode()).hexdigest() in parts[3][0]
 
 
 def test_decode_search_results_discards_malformed_fields():
