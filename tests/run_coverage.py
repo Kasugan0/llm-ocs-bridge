@@ -21,8 +21,8 @@ FILE_BASELINES = {
     "src/llm_ocs_bridge/metrics.py": (Fraction(33, 33), Fraction(2, 2)),
     "src/llm_ocs_bridge/models.py": (Fraction(31, 32), Fraction(1, 2)),
     "src/llm_ocs_bridge/questions.py": (Fraction(157, 159), Fraction(70, 72)),
-    "src/llm_ocs_bridge/search.py": (Fraction(129, 132), Fraction(49, 50)),
-    "src/llm_ocs_bridge/service.py": (Fraction(179, 181), Fraction(51, 54)),
+    "src/llm_ocs_bridge/search.py": (Fraction(127, 130), Fraction(47, 48)),
+    "src/llm_ocs_bridge/service.py": (Fraction(181, 183), Fraction(53, 56)),
     "src/llm_ocs_bridge/storage.py": (Fraction(167, 173), Fraction(32, 38)),
     "src/llm_ocs_bridge/utils.py": (Fraction(18, 18), Fraction(2, 2)),
 }

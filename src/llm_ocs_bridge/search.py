@@ -123,8 +123,6 @@ class ExaSearch:
 
     @staticmethod
     def _semantic_score(terms: frozenset[str], text: str) -> float:
-        if not terms:
-            return 0.0
         if len(terms) > _DIRECT_MATCH_LIMIT:
             return len(terms & _extract_terms(text)) / len(terms)
         text = text.lower()

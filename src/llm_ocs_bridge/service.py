@@ -19,7 +19,7 @@ from .config import Settings, validate_runtime_settings
 from .llm import InvalidAnswerError, LLMAnswerer, MissingKeyError
 from .metrics import MetricsStore
 from .models import OCSQuery, SearchResult
-from .search import ExaSearch
+from .search import ExaSearch, question_terms
 from .storage import Database
 from .utils import sanitize_error
 
@@ -138,6 +138,10 @@ async def _resolve_evidence(
     query: OCSQuery,
 ) -> Evidence:
     settings = runtime.settings
+    if not question_terms(query):
+        return Evidence(
+            [], "llm-fallback", "题目没有可供检索的文字，且未启用 LLM fallback"
+        )
     key = search_key(query, settings)
     cached_payload = await runtime.search_cache.get(key)
     if cached_payload is not None:

@@ -41,6 +41,26 @@ async def controlled_runtime(settings):
 
 
 @pytest.mark.asyncio
+async def test_question_without_searchable_text_skips_search(settings):
+    from llm_ocs_bridge.models import MediaItem
+
+    async with controlled_runtime(
+        replace(settings, llm_fallback_enabled=True, vision_model="vision-x")
+    ) as (runtime, entered, release):
+        release.set()
+        query = OCSQuery(
+            "", (), "", (MediaItem("image", "data:image/png;base64,iVBORw0KGgo="),)
+        )
+        result = await service_module.answer(runtime, query)
+
+        assert result.answer == "A"
+        runtime.search_client.search.assert_not_awaited()
+        counters = await runtime.metrics_store.get_counters()
+        assert counters["search_requests"] == 0
+        assert counters["search_cache_misses"] == 0
+
+
+@pytest.mark.asyncio
 async def test_cache_race_recheck_does_not_count_another_lookup(settings):
     async with controlled_runtime(settings) as (runtime, entered, release):
         runtime.answer_cache.get = AsyncMock(side_effect=[None, "A"])
