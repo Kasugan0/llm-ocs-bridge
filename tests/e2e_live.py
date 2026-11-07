@@ -46,10 +46,16 @@ def _solid_png(red: int, green: int, blue: int, size: int = 64) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
+def _fixture(name: str) -> str:
+    path = Path(__file__).parent / "fixtures" / name
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
 _RED_SQUARE = _solid_png(220, 20, 20)
+_CALCULUS_IMAGE = _fixture("calculus-integral.png")
 
 
-_MAX_ATTEMPTS = 20
+_MAX_ATTEMPTS = 24
 _CASES = (
     (
         "non-first-single",
@@ -113,6 +119,18 @@ _CASES = (
             "suggestion_options": "A. 红色\nB. 绿色\nC. 蓝色",
         },
         "A",
+    ),
+    (
+        "image-ocs5-calculus",
+        {
+            "title": "计算下面的题目：",
+            "options": ["A. 1/4", "B. 1/3", "C. 1/2", "D. 1"],
+            "type": "single",
+            "images": [_CALCULUS_IMAGE],
+            "suggestion_title": "计算下面的题目： [图片1]",
+            "suggestion_options": "A. 1/4\nB. 1/3\nC. 1/2\nD. 1",
+        },
+        "B",
     ),
 )
 

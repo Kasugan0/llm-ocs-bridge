@@ -43,7 +43,7 @@ curl -sS http://127.0.0.1:8009/search \
 uv run python tests/e2e_live.py --confirm-paid --output /tmp/ocs-live.json
 ```
 
-脚本在 search 与 fallback 两种模式下各跑 6 个用例，覆盖单选、多选、判断、填空、URL 图片题和 OCS 5 base64 图片题。每例先冷请求再热请求，校验响应、provider、上游调用次数与持久化计数；热请求必须命中缓存且不产生新的上游调用。全部请求共享 20 次出站尝试预算，超出即判失败。
+脚本在 search 与 fallback 两种模式下各跑 7 个用例，覆盖单选、多选、判断、填空、URL 图片题，以及 OCS 5 base64 图片题的合成图与真实渲染图两种。每例先冷请求再热请求，校验响应、provider、上游调用次数与持久化计数；热请求必须命中缓存且不产生新的上游调用。全部请求共享 24 次出站尝试预算，超出即判失败。
 
 只验证单个用例时加 `--case`，例如图片题：
 
@@ -51,6 +51,11 @@ uv run python tests/e2e_live.py --confirm-paid --output /tmp/ocs-live.json
 uv run python tests/e2e_live.py --confirm-paid --case image-ocs5-color --output /tmp/ocs-live-image.json
 ```
 
-图片用例使用运行时生成的 64×64 纯红方块 PNG，题干问颜色、选项为红/绿/蓝，正确答案固定为 `A`，因此可自动判定视觉模型是否真的看到了图片。该用例证明服务端、base64 协议和 `VISION_MODEL` 全链路可用，但不代表真实课程截图的识别正确率。
+图片用例有两个：
+
+- `image-ocs5-color` 使用运行时生成的 64×64 纯红方块 PNG，题干问颜色、选项为红/绿/蓝，正确答案固定为 `A`。它只依赖代码，不需要外部素材，用来确认视觉模型真的看到了图片。
+- `image-ocs5-calculus` 使用 [tests/fixtures/calculus-integral.png](tests/fixtures/calculus-integral.png)，这是渲染好的公式图（计算 `\int_{0}^{1} x^{2}\,dx`）。图片只含题干，选项以文本随请求发送，正确答案固定为 `B`（`1/3`）。它代表真实 OCS 题目形态：文字题干、公式图片、文本选项并存。
+
+两者都证明服务端、base64 协议和 `VISION_MODEL` 全链路可用，但不代表真实课程截图（复杂图表、长公式）的识别正确率。
 
 脚本会清除 `*_proxy` 环境变量，因为部分代理变量（例如 `NODE_USE_ENV_PROXY`）会被 httpx 当作代理地址解析并导致启动失败。需要代理才能访问上游时，请在脚本外显式配置受支持的变量。

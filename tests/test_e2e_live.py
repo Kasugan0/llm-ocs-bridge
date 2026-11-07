@@ -1,6 +1,7 @@
 import multiprocessing
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 import e2e_live
 import httpx
@@ -11,7 +12,7 @@ from llm_ocs_bridge.answers import validate_answer
 
 
 def test_live_cases_have_distinct_valid_expected_answers():
-    assert len(e2e_live._CASES) == 6
+    assert len(e2e_live._CASES) == 7
     assert {query["type"] for _, query, _ in e2e_live._CASES} == {
         "single",
         "multiple",
@@ -23,13 +24,23 @@ def test_live_cases_have_distinct_valid_expected_answers():
     assert e2e_live._CASES[0][2] != "A"
 
 
-def test_live_image_case_uses_the_ocs5_protocol():
-    case = {name: query for name, query, _ in e2e_live._CASES}["image-ocs5-color"]
+@pytest.mark.parametrize("name", ["image-ocs5-color", "image-ocs5-calculus"])
+def test_live_image_cases_use_the_ocs5_protocol(name):
+    case = {case: query for case, query, _ in e2e_live._CASES}[name]
 
-    assert case["images"] == [e2e_live._RED_SQUARE]
+    assert len(case["images"]) == 1
     assert case["images"][0].startswith("data:image/png;base64,")
     assert "[图片1]" in case["suggestion_title"]
     assert case["options"] == case["suggestion_options"].split("\n")
+
+
+def test_calculus_image_case_uses_the_checked_in_fixture():
+    case = {case: query for case, query, _ in e2e_live._CASES}["image-ocs5-calculus"]
+    path = Path(e2e_live.__file__).parent / "fixtures" / "calculus-integral.png"
+
+    assert path.is_file()
+    assert case["images"][0] == e2e_live._CALCULUS_IMAGE
+    assert case["title"] == "计算下面的题目："
 
 
 def test_live_budget_rejects_the_attempt_after_the_limit():
