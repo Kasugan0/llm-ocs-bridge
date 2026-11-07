@@ -14,6 +14,14 @@ from .models import OCSQuery
 SEARCH_REVISION = "v4"
 
 
+class ConfigError(RuntimeError):
+    def __init__(self, name: str, problem: str, detail: str = "") -> None:
+        self.name = name
+        self.problem = problem
+        self.detail = detail
+        super().__init__(f"{name} {problem}" + (f": {detail}" if detail else ""))
+
+
 def _bool(values: Mapping[str, str | None], name: str, default: bool = False) -> bool:
     value = values.get(name)
     if value is None:
@@ -23,7 +31,7 @@ def _bool(values: Mapping[str, str | None], name: str, default: bool = False) ->
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise RuntimeError(f"{name} must be a boolean")
+    raise ConfigError(name, "must be a boolean", value)
 
 
 def _text(
@@ -32,9 +40,13 @@ def _text(
     value = values.get(name)
     if value is None or not value.strip():
         if required:
-            raise RuntimeError(f"{name} is required")
+            raise ConfigError(name, "is required")
         return None
     return value.strip()
+
+
+def _range_error(name: str, value: str, constraint: str) -> ConfigError:
+    return ConfigError(name, f"must be {constraint}", value)
 
 
 def _int(
@@ -49,12 +61,12 @@ def _int(
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
+        raise ConfigError(name, "must be an integer", value) from exc
+    constraint = f"at least {minimum}"
+    if maximum is not None:
+        constraint = f"between {minimum} and {maximum}"
     if parsed < minimum or (maximum is not None and parsed > maximum):
-        range_text = f"at least {minimum}"
-        if maximum is not None:
-            range_text = f"between {minimum} and {maximum}"
-        raise RuntimeError(f"{name} must be {range_text}")
+        raise _range_error(name, value, constraint)
     return parsed
 
 
@@ -80,16 +92,16 @@ def _float(
     try:
         parsed = float(value)
     except ValueError as exc:
-        raise RuntimeError(f"{name} must be a number") from exc
-    minimum_valid = parsed >= minimum if minimum_inclusive else parsed > minimum
+        raise ConfigError(name, "must be a number", value) from exc
     if not isfinite(parsed):
-        raise RuntimeError(f"{name} must be finite")
+        raise ConfigError(name, "must be finite", value)
+    minimum_valid = parsed >= minimum if minimum_inclusive else parsed > minimum
     if not minimum_valid or (maximum is not None and parsed > maximum):
         lower = "at least" if minimum_inclusive else "greater than"
         constraint = f"{lower} {minimum}"
         if maximum is not None:
             constraint += f" and at most {maximum}"
-        raise RuntimeError(f"{name} must be {constraint}")
+        raise _range_error(name, value, constraint)
     return parsed
 
 
@@ -162,7 +174,9 @@ def _require_private_env_file(path: Path) -> None:
     if os.name == "posix":
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode != 0o600:
-            raise RuntimeError(f"配置文件权限必须为 0600，当前为 {mode:04o}: {path}")
+            raise ConfigError(
+                "配置文件", "权限必须为 0600", f"当前为 {mode:04o}: {path}"
+            )
 
 
 def load_storage_settings(
@@ -240,9 +254,9 @@ def load_settings(
 
 def _validate_secret(name: str, value: str | None) -> None:
     if not value:
-        raise RuntimeError(f"{name} is required")
+        raise ConfigError(name, "is required")
     if value.lower().startswith("replace-with-"):
-        raise RuntimeError(f"{name} still uses the example placeholder")
+        raise ConfigError(name, "still uses the example placeholder")
 
 
 def validate_runtime_settings(settings: Settings) -> None:
@@ -255,4 +269,4 @@ def validate_runtime_settings(settings: Settings) -> None:
 def validate_check_settings(settings: Settings) -> None:
     validate_runtime_settings(settings)
     if not settings.exa_api_key and not settings.llm_fallback_enabled:
-        raise RuntimeError("EXA_API_KEY is required when LLM fallback is disabled")
+        raise ConfigError("EXA_API_KEY", "is required when LLM fallback is disabled")

@@ -8,6 +8,7 @@ import pytest
 
 from llm_ocs_bridge import main as main_module
 from llm_ocs_bridge.cache import AnswerCacheStore, SearchCacheStore, cache_key
+from llm_ocs_bridge.config import ConfigError
 from llm_ocs_bridge.main import _clear_cache
 from llm_ocs_bridge.models import OCSQuery
 from llm_ocs_bridge.storage import Database
@@ -500,24 +501,54 @@ def test_check_explains_provider_status(
 
 
 @pytest.mark.parametrize(
-    ("message", "expected"),
+    ("error", "expected"),
     [
         (
-            "EXA_API_KEY is required when LLM fallback is disabled",
+            ConfigError("EXA_API_KEY", "is required when LLM fallback is disabled"),
             "已关闭 LLM fallback",
         ),
-        ("ACCESS_TOKEN is required", "配置项 ACCESS_TOKEN 缺失"),
-        ("OPENAI_API_KEY still uses the example placeholder", "仍是示例占位符"),
-        ("DEBUG must be a boolean", "请使用 true、false、1 或 0"),
-        ("PORT must be an integer", "必须是整数"),
-        ("LLM_TIMEOUT_SECONDS must be a number", "必须是数字"),
-        ("MIN_SEARCH_QUALITY_SCORE must be finite", "不能是无穷大或 NaN"),
-        ("PORT must be between 1 and 65535", "超出允许范围"),
-        ("配置文件权限必须为 0600，当前为 0644: .env", "权限必须为 0600"),
+        (ConfigError("ACCESS_TOKEN", "is required"), "配置项 ACCESS_TOKEN 缺失"),
+        (
+            ConfigError("OPENAI_API_KEY", "still uses the example placeholder"),
+            "仍是示例占位符",
+        ),
+        (
+            ConfigError("DEBUG", "must be a boolean", "maybe"),
+            "请使用 true、false、1 或 0",
+        ),
+        (ConfigError("PORT", "must be an integer", "abc"), "必须是整数"),
+        (ConfigError("LLM_TIMEOUT_SECONDS", "must be a number"), "必须是数字"),
+        (
+            ConfigError("MIN_SEARCH_QUALITY_SCORE", "must be finite"),
+            "不能是无穷大或 NaN",
+        ),
+        (
+            ConfigError("PORT", "must be between 1 and 65535", "70000"),
+            "超出允许范围：between 1 and 65535",
+        ),
+        (
+            ConfigError("配置文件", "权限必须为 0600", "当前为 0644: .env"),
+            "权限必须为 0600",
+        ),
     ],
 )
-def test_configuration_error_names_the_setting(message, expected):
-    assert expected in main_module._configuration_error(RuntimeError(message), 4096)
+def test_configuration_error_names_the_setting(error, expected):
+    assert expected in main_module._configuration_error(error, 4096)
+
+
+def test_configuration_error_keeps_current_value():
+    message = main_module._configuration_error(
+        ConfigError("PORT", "must be an integer", "abc"), 4096
+    )
+    assert "当前值 abc" in message
+
+
+def test_configuration_error_falls_back_to_sanitized_detail():
+    message = main_module._configuration_error(
+        RuntimeError("Authorization: Bearer sk-secret-value"), 4096
+    )
+    assert "sk-secret-value" not in message
+    assert "[REDACTED]" in message
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 
+from llm_ocs_bridge.config import ConfigError
 from llm_ocs_bridge.questions import normalize_query
 
 if TYPE_CHECKING:
@@ -128,6 +129,7 @@ def _check_env_file() -> Path:
             raise CheckError(f".env 权限必须为 0600，当前为 {mode:04o}")
     return path
 
+
 def _check_image_config(settings: Settings) -> None:
     if not settings.vision_model:
         _status("WARN", "VISION_MODEL 未配置：图片题会直接返回错误")
@@ -156,6 +158,8 @@ def _load_settings(
         settings = load_settings(env_path)
         validator = validate_check_settings if check else validate_runtime_settings
         validator(settings)
+    except ConfigError:
+        raise
     except RuntimeError as exc:
         raise CheckError(str(exc)) from exc
     return settings
@@ -186,11 +190,12 @@ async def _check_llm(settings: Settings) -> None:
 
 async def _check_exa(settings: Settings) -> None:
     from .models import OCSQuery
-    from .search import ExaSearch
+    from .search import ExaSearch, question_terms
 
+    query = OCSQuery(title="Python programming language")
     search = ExaSearch(settings)
     try:
-        await search.search(OCSQuery(title="Python programming language"), 1)
+        await search.search(query, 1, question_terms(query))
     finally:
         await search.aclose()
 
@@ -254,171 +259,123 @@ def _safe_error(exc: Exception, max_bytes: int) -> str:
     return sanitize_error(str(exc), max_bytes) or type(exc).__name__
 
 
+_STATUS_RE = re.compile(r"(?:HTTP|status code)\s*[:=]?\s*(\d{3})", re.IGNORECASE)
+
+
 def _http_status(exc: Exception) -> int | None:
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        response = getattr(current, "response", None)
-        status = getattr(response, "status_code", None)
+        status = getattr(getattr(current, "response", None), "status_code", None)
         if isinstance(status, int) and not isinstance(status, bool):
             return status
-        match = re.search(
-            r"(?:HTTP|status code)\s*[:=]?\s*(\d{3})",
-            str(current),
-            re.IGNORECASE,
-        )
+        match = _STATUS_RE.search(str(current))
         if match:
             return int(match.group(1))
         current = current.__cause__ or current.__context__
     return None
 
 
-def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
-    if provider == "OpenAI":
-        from .llm import (
-            InvalidAnswerError,
-            MissingKeyError,
-            ProviderProtocolError,
-            ResponseTooLargeError,
-            TransientLLMError,
-        )
+_PROVIDER_HINTS = {
+    "OpenAI": {
+        "key": "OPENAI_API_KEY",
+        400: "OpenAI 拒绝了请求参数（HTTP 400）。请检查 OPENAI_MODEL、"
+        "OPENAI_BASE_URL 以及该兼容服务是否支持 /chat/completions；"
+        "确认配置与服务接口一致。",
+        404: "OpenAI 接口或模型不存在（HTTP 404）。请检查 OPENAI_BASE_URL 是否"
+        "包含正确的 /v1，并确认 OPENAI_MODEL 在该服务上可用。",
+    },
+    "Exa": {
+        "key": "EXA_API_KEY",
+        400: "Exa 拒绝了搜索请求参数（HTTP 400）。请检查 exa-py 版本和网络代理。",
+        404: "Exa 接口不存在（HTTP 404）。请检查网络代理或 exa-py 依赖版本。",
+    },
+}
 
-        if isinstance(exc, MissingKeyError):
-            return "OpenAI API 密钥未配置。请在 .env 中填写 OPENAI_API_KEY。"
-        if isinstance(exc, ResponseTooLargeError):
-            return (
-                "OpenAI 响应超过本地大小限制。请检查 MAX_LLM_RESPONSE_BYTES，"
-                "确认该值足以容纳上游响应。"
-            )
-        if isinstance(exc, InvalidAnswerError):
-            return (
-                "OpenAI 返回的答案格式不符合项目要求。请检查 OPENAI_BASE_URL、"
-                "OPENAI_MODEL 及其兼容接口。"
-            )
+_STATUS_HINTS = {
+    401: "{provider} 认证失败（HTTP 401）。请检查 .env 中 {key} 是否有效。",
+    403: "{provider} 访问被拒绝（HTTP 403）。请检查账号权限、项目或组织配置，"
+    "以及账户配额。",
+    429: "{provider} 请求过于频繁或账户配额不足（HTTP 429）。请稍后重试，"
+    "并检查账户配额；无需修改 OCS 配置",
+    408: "{provider} 请求超时（HTTP 408）。请检查网络连接、代理和服务地址。",
+    504: "{provider} 请求超时（HTTP 504）。请检查网络连接、代理和服务地址。",
+}
+
+
+def _llm_error_hints() -> dict[type[Exception], str]:
+    from .llm import (
+        InvalidAnswerError,
+        MissingKeyError,
+        ProviderProtocolError,
+        ResponseTooLargeError,
+        TransientLLMError,
+    )
+
+    return {
+        MissingKeyError: "OpenAI API 密钥未配置。请在 .env 中填写 OPENAI_API_KEY。",
+        ResponseTooLargeError: "OpenAI 响应超过本地大小限制。请检查 "
+        "MAX_LLM_RESPONSE_BYTES，确认该值足以容纳上游响应。",
+        InvalidAnswerError: "OpenAI 返回的答案格式不符合项目要求。请检查 "
+        "OPENAI_BASE_URL、OPENAI_MODEL 及其兼容接口。",
+        TransientLLMError: "OpenAI 暂时不可用。请检查网络连接、代理和 "
+        "OPENAI_BASE_URL。",
+        ProviderProtocolError: "OpenAI 返回了不兼容的响应。请检查 OPENAI_BASE_URL、"
+        "OPENAI_MODEL，以及该服务是否支持 /chat/completions。",
+    }
+
+
+def _provider_error(provider: str, exc: Exception, max_bytes: int) -> str:
+    hints = _PROVIDER_HINTS[provider]
     status = _http_status(exc)
-    if status == 401:
-        key_name = "OPENAI_API_KEY" if provider == "OpenAI" else "EXA_API_KEY"
-        return (
-            f"{provider} 认证失败（HTTP 401）。请检查 .env 中 {key_name} 是否有效。"
-        )
-    if status == 403:
-        return (
-            f"{provider} 访问被拒绝（HTTP 403）。请检查账号权限、项目或组织配置，"
-            "以及账户配额。"
-        )
-    if status == 400:
-        if provider == "OpenAI":
-            return (
-                "OpenAI 拒绝了请求参数（HTTP 400）。请检查 OPENAI_MODEL、"
-                "OPENAI_BASE_URL 以及该兼容服务是否支持 /chat/completions；"
-                "确认配置与服务接口一致。"
-            )
-        return (
-            "Exa 拒绝了搜索请求参数（HTTP 400）。请检查 exa-py 版本和网络代理。"
-        )
-    if status == 404:
-        if provider == "OpenAI":
-            return (
-                "OpenAI 接口或模型不存在（HTTP 404）。请检查 OPENAI_BASE_URL 是否"
-                "包含正确的 /v1，并确认 OPENAI_MODEL 在该服务上可用。"
-            )
-        return (
-            "Exa 接口不存在（HTTP 404）。请检查网络代理或 exa-py 依赖版本。"
-        )
-    if status == 429:
-        return (
-            f"{provider} 请求过于频繁或账户配额不足（HTTP 429）。请稍后重试，"
-            "并检查账户配额；无需修改 OCS 配置"
-        )
-    if status in {408, 504}:
-        return (
-            f"{provider} 请求超时（HTTP {status}）。请检查网络连接、代理和服务地址。"
-        )
-    if status is not None and status >= 500:
-        return (
-            f"{provider} 服务暂时不可用（HTTP {status}）。请稍后重试；如果持续失败，"
-            "请检查上游服务状态和网络连接"
-        )
     if status is not None:
+        if status in hints:
+            return hints[status]
+        if status in _STATUS_HINTS:
+            return _STATUS_HINTS[status].format(provider=provider, key=hints["key"])
+        if status >= 500:
+            return (
+                f"{provider} 服务暂时不可用（HTTP {status}）。请稍后重试；"
+                "如果持续失败，请检查上游服务状态和网络连接"
+            )
         return (
             f"{provider} 返回 HTTP {status}，请求未成功。请检查服务地址、"
             "密钥和账户权限。"
         )
+    for error_type, hint in _llm_error_hints().items():
+        if isinstance(exc, error_type):
+            return hint
     if isinstance(exc, TimeoutError):
-        return (
-            f"{provider} 请求超时。请检查网络连接、代理和服务地址。"
-        )
-    if provider == "OpenAI" and isinstance(exc, TransientLLMError):
-        return "OpenAI 暂时不可用。请检查网络连接、代理和 OPENAI_BASE_URL。"
-    if provider == "OpenAI" and isinstance(exc, ProviderProtocolError):
-        return (
-            "OpenAI 返回了不兼容的响应。请检查 OPENAI_BASE_URL、OPENAI_MODEL，"
-            "以及该服务是否支持 /chat/completions。"
-        )
-
+        return f"{provider} 请求超时。请检查网络连接、代理和服务地址。"
     detail = _safe_error(exc, max_bytes)
-    return (
-        f"{provider} 检查失败：{detail}。请检查网络、服务地址和密钥配置。"
-    )
+    return f"{provider} 检查失败：{detail}。请检查网络、服务地址和密钥配置。"
+
+
+_CONFIG_PROBLEMS = {
+    "is required": " 缺失。请在当前目录的 .env 中填写该配置。",
+    "is required when LLM fallback is disabled": " 缺失。已关闭 LLM fallback，"
+    "请填写该密钥，或将 LLM_FALLBACK_ENABLED 改为 true。",
+    "must be a boolean": " 的值无效。请使用 true、false、1 或 0。",
+    "must be an integer": " 的值无效，必须是整数。请参考 .env.example 修正。",
+    "must be a number": " 的值无效，必须是数字。请参考 .env.example 修正。",
+    "must be finite": " 不能是无穷大或 NaN。请参考 .env.example 修正。",
+    "still uses the example placeholder": " 仍是示例占位符。请替换为真实值。",
+}
 
 
 def _configuration_error(exc: Exception, max_bytes: int) -> str:
-    detail = _safe_error(exc, max_bytes)
-    if detail.startswith("配置文件权限必须为 0600"):
-        return detail
-    if detail == "EXA_API_KEY is required when LLM fallback is disabled":
-        return (
-            "已关闭 LLM fallback，因此必须配置 EXA_API_KEY。请在 .env 中填写密钥，"
-            "或将 LLM_FALLBACK_ENABLED 改为 true。"
+    if not isinstance(exc, ConfigError):
+        return _safe_error(exc, max_bytes)
+    fix = _CONFIG_PROBLEMS.get(exc.problem)
+    if fix is None:
+        fix = (
+            f" 的值超出允许范围：{exc.problem[8:]}。"
+            if exc.problem.startswith("must be ")
+            else f" 的值无效：{exc.problem}。"
         )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) is required", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 缺失。请在当前目录的 .env 中填写该配置。"
-        )
-
-    match = re.fullmatch(
-        r"([A-Z][A-Z0-9_]*) still uses the example placeholder", detail
-    )
-    if match:
-        return (
-            f"配置项 {match.group(1)} 仍是示例占位符。请替换为真实值。"
-        )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be a boolean", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 的值无效。请使用 true、false、1 或 0。"
-        )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be an integer", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 的值无效，必须是整数。请参考 .env.example 修正。"
-        )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be a number", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 的值无效，必须是数字。请参考 .env.example 修正。"
-        )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be finite", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 不能是无穷大或 NaN。请参考 .env.example 修正。"
-        )
-
-    match = re.fullmatch(r"([A-Z][A-Z0-9_]*) must be (.+)", detail)
-    if match:
-        return (
-            f"配置项 {match.group(1)} 的值超出允许范围：{match.group(2)}。"
-            "请参考 .env.example 修正。"
-        )
-
-    return detail
+    detail = f"（当前值 {exc.detail}）" if exc.detail else ""
+    return f"配置项 {exc.name}{fix}{detail}"
 
 
 async def _check() -> int:
@@ -480,7 +437,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             from .config import load_storage_settings
 
             storage_settings = load_storage_settings()
-        except RuntimeError as exc:
+        except (CheckError, RuntimeError) as exc:
             _exit_with_config_error(parser, exc)
         asyncio.run(_clear_cache(args.scope, storage_settings))
         return

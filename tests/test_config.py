@@ -3,6 +3,12 @@ import os
 
 import pytest
 
+from llm_ocs_bridge.config import ConfigError
+
+
+def _config_error(name, problem):
+    return pytest.raises(ConfigError, match=f"^{name} {problem}")
+
 
 def test_default_host_is_localhost(monkeypatch):
     monkeypatch.delenv("HOST", raising=False)
@@ -22,7 +28,7 @@ def test_empty_access_token_fails_runtime_validation(monkeypatch):
     monkeypatch.setenv("ACCESS_TOKEN", "   ")
     from llm_ocs_bridge import config as config
 
-    with pytest.raises(RuntimeError, match="ACCESS_TOKEN is required"):
+    with _config_error("ACCESS_TOKEN", "is required"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))
 
 
@@ -31,7 +37,7 @@ def test_missing_openai_key_fails_runtime_validation(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "true")
     from llm_ocs_bridge import config as config
 
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
+    with _config_error("OPENAI_API_KEY", "is required"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))
 
 
@@ -40,7 +46,7 @@ def test_missing_exa_key_requires_fallback(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_ENABLED", "false")
     from llm_ocs_bridge import config as config
 
-    with pytest.raises(RuntimeError, match="EXA_API_KEY is required"):
+    with _config_error("EXA_API_KEY", "is required when LLM fallback is disabled"):
         config.validate_check_settings(config.load_settings(environ=os.environ))
 
 
@@ -68,14 +74,14 @@ def test_example_placeholders_fail_runtime_validation(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
     from llm_ocs_bridge import config as config
 
-    with pytest.raises(RuntimeError, match=f"{name} still uses"):
+    with _config_error(name, "still uses the example placeholder"):
         config.validate_runtime_settings(config.load_settings(environ=os.environ))
 
 
 def test_invalid_cache_capacity_fails_configuration(monkeypatch):
     monkeypatch.setenv("MAX_CACHE_BYTES", "0")
 
-    with pytest.raises(RuntimeError, match="MAX_CACHE_BYTES"):
+    with _config_error("MAX_CACHE_BYTES", "must be at least 1"):
         importlib.import_module("llm_ocs_bridge.config").load_settings(
             environ=os.environ
         )
@@ -93,10 +99,11 @@ def test_invalid_cache_capacity_fails_configuration(monkeypatch):
 def test_invalid_timeout_configuration_fails(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
 
-    with pytest.raises(RuntimeError, match=name):
+    with pytest.raises(ConfigError) as exc_info:
         importlib.import_module("llm_ocs_bridge.config").load_settings(
             environ=os.environ
         )
+    assert exc_info.value.name == name
 
 
 @pytest.mark.parametrize(
@@ -112,10 +119,11 @@ def test_invalid_timeout_configuration_fails(monkeypatch, name, value):
 )
 def test_invalid_answer_budget_fails_configuration(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
-    with pytest.raises(RuntimeError, match=name):
+    with pytest.raises(ConfigError) as exc_info:
         importlib.import_module("llm_ocs_bridge.config").load_settings(
             environ=os.environ
         )
+    assert exc_info.value.name == name
 
 
 @pytest.mark.parametrize("timeout", [45.5, 60, 120])
