@@ -54,6 +54,7 @@ _JUDGEMENT_FALSE = frozenset(
     }
 )
 _JUDGEMENT_WORD_RE = re.compile(r"[^\u2E80-\u9FFFA-Za-z0-9√×]")
+_PLACEHOLDER_RE = re.compile(r"\[图片(\d+)\]")
 
 
 def extract_media(text: str) -> tuple[str, tuple[MediaItem, ...]]:
@@ -232,6 +233,16 @@ def validate_query(query: OCSQuery, settings: Settings) -> None:
             raise QuestionError("单选题和多选题必须提供有效选项")
 
 
+def _validate_placeholders(query: OCSQuery) -> None:
+    images = sum(item.kind == "image" for item in query.media)
+    if not images:
+        return
+    text = "\n".join((query.suggestion_title, *query.suggestion_options))
+    referenced = [int(match) for match in _PLACEHOLDER_RE.findall(text)]
+    if referenced and max(referenced) > images:
+        raise QuestionError("图片占位符超出图片数量")
+
+
 def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
     query = normalize_query(*_fields(body))
     suggestion_title = _suggestion(body.get("suggestion_title") or "")
@@ -265,6 +276,7 @@ def parse_query(body: dict[str, object], settings: Settings) -> OCSQuery:
         suggestion_options=suggestion_options,
     )
     validate_query(query, settings)
+    _validate_placeholders(query)
     if not (query.title or any(item.kind == "image" for item in query.media)):
         raise QuestionError("题目不能为空")
     return query

@@ -7,8 +7,8 @@ from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LINE_BASELINE = Fraction(1548, 1591)
-BRANCH_BASELINE = Fraction(479, 518)
+LINE_BASELINE = Fraction(1558, 1601)
+BRANCH_BASELINE = Fraction(483, 522)
 FILE_BASELINES = {
     "src/llm_ocs_bridge/__init__.py": (Fraction(0), Fraction(0)),
     "src/llm_ocs_bridge/answers.py": (Fraction(162, 164), Fraction(80, 82)),
@@ -20,7 +20,7 @@ FILE_BASELINES = {
     "src/llm_ocs_bridge/main.py": (Fraction(227, 237), Fraction(82, 92)),
     "src/llm_ocs_bridge/metrics.py": (Fraction(33, 33), Fraction(2, 2)),
     "src/llm_ocs_bridge/models.py": (Fraction(31, 32), Fraction(1, 2)),
-    "src/llm_ocs_bridge/questions.py": (Fraction(157, 159), Fraction(70, 72)),
+    "src/llm_ocs_bridge/questions.py": (Fraction(167, 169), Fraction(74, 76)),
     "src/llm_ocs_bridge/search.py": (Fraction(127, 130), Fraction(47, 48)),
     "src/llm_ocs_bridge/service.py": (Fraction(181, 183), Fraction(53, 56)),
     "src/llm_ocs_bridge/storage.py": (Fraction(167, 173), Fraction(32, 38)),

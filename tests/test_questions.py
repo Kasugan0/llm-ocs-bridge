@@ -253,6 +253,8 @@ def test_payloads_supersede_url_images_but_keep_audio(settings):
         _ocs5_body(
             title='题目 <img src="https://x/a.png"> <audio src="https://x/a.mp3">',
             images=[PNG],
+            suggestion_title="题目 [图片1]",
+            suggestion_options="A.甲\nB.乙",
         ),
         settings,
     )
@@ -280,6 +282,20 @@ def test_payloads_supersede_url_images_but_keep_audio(settings):
 def test_parse_query_rejects_malformed_ocs5_fields(settings, overrides, message):
     with pytest.raises(QuestionError, match=f"^{message}$"):
         parse_query(_ocs5_body(**overrides), settings)
+
+
+def test_parse_query_rejects_placeholder_beyond_image_count(settings):
+    body = _ocs5_body(images=[PNG], suggestion_title="图中是什么公式 [图片2]")
+
+    with pytest.raises(QuestionError, match="^图片占位符超出图片数量$"):
+        parse_query(body, settings)
+
+
+def test_parse_query_allows_literal_placeholder_without_images(settings):
+    query = parse_query({"title": "课件里 [图片1] 表示第一张图"}, settings)
+
+    assert query.title == "课件里 [图片1] 表示第一张图"
+    assert query.media == ()
 
 
 @pytest.mark.parametrize(
