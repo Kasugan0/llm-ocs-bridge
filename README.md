@@ -64,7 +64,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-在 `.env` 中填写 `ACCESS_TOKEN`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`。`EXA_API_KEY` 可选。
+在 `.env` 中填写 `ACCESS_TOKEN`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`。`EXA_API_KEY` 可选。需要图片题时再填写支持图片输入的 `VISION_MODEL`；从旧版本升级且 `.env` 里仍是 `MAX_REQUEST_BYTES=262144` 时，需改为 32MB，否则较大的图片题会被拒绝。
 
 检查配置并生成 OCS 题库 JSON：
 
