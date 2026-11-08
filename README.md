@@ -41,6 +41,7 @@ Exa 是可选项。未设置 `EXA_API_KEY` 时，项目不会匿名调用 Exa，
 | `app.py` | HTTP、鉴权、响应映射和生命周期 |
 | `service.py` | 有类型的 Runtime、缓存与答题流程 |
 | `questions.py` | 题目/选项归一化、标签解析和输入校验 |
+| `images.py` | 图片 data URL 解析、格式与数量大小校验 |
 | `llm.py` | 模型 HTTP 请求、响应读取和重试 |
 | `answers.py` | 提示词、模型答案解析、OCS 答案编码和校验 |
 | `search.py` | Exa 适配、英文词/中文二元组匹配和证据评分 |
@@ -135,12 +136,14 @@ OCS 客户端的请求超时默认是 60 秒，可在客户端配置中调整。
 ## 开发验证
 
 ```bash
-uv run --frozen pytest
-uv run --frozen ruff check src tests pyproject.toml
-uv run --frozen python -m py_compile src/llm_ocs_bridge/*.py tests/*.py
+uv run pytest
+uv run ruff check src tests pyproject.toml
+uv run python -m compileall -q src tests
 ```
 
-测试使用合成凭据与临时数据库，不调用付费上游。架构审阅基线、逐函数记录及重构验收见 `SRC_ARCHITECTURE_REVIEW.md`。
+`uv run pytest` 通过 pytest-cov 强制 90% 覆盖率门槛：即使测试全绿，覆盖率不足也会让命令失败。测试使用合成凭据与临时数据库，不调用付费上游。GitHub Actions 在 push 和 pull request 时运行同样的 lint 与测试。
+
+`tests/e2e_live.py` 是可选的真实上游冒烟脚本：启动真实服务进程并实际调用 Exa 与模型服务，需要 `--confirm-paid` 与有效密钥，按需单独运行；其中另含一组不产生任何上游调用的校验用例。
 
 ## 文档
 
