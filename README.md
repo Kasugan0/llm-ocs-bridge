@@ -158,3 +158,7 @@ uv run python -m compileall -q src tests
 ## 项目状态
 
 当前版本面向个人本机使用，不提供公网部署、多用户隔离或远程管理能力。
+
+## 许可证
+
+[MIT](LICENSE)
