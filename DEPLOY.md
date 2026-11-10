@@ -31,11 +31,12 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-其余配置项及默认值见 [.env.example](.env.example)。常用开关：
+其余配置项及默认值见 [.env.example](.env.example)。常用项：
 
-- `EXA_API_KEY` 留空且 `LLM_FALLBACK_ENABLED=true`：跳过检索直接作答，`check` 显示非致命警告。本项目未接入 Exa x402，留空不代表匿名搜索。
-- `LLM_FALLBACK_ENABLED=false`：`EXA_API_KEY` 变为必填，检索失败时不直接作答。
-- `ANSWER_TIMEOUT_SECONDS`：服务端答题总预算，默认 55s，应小于 OCS 客户端超时（默认 60s）。需要更长预算时两端同时调大。
+- `EXA_API_KEY` 留空且 `LLM_FALLBACK_ENABLED=true`：跳过检索直接作答，`check` 显示非致命警告。本项目未接入 Exa x402，留空不代表匿名搜索。`LLM_FALLBACK_ENABLED=false` 时 `EXA_API_KEY` 必填。
+- `ANSWER_TIMEOUT_SECONDS`：服务端答题总预算，默认 55s，应小于 OCS 客户端超时（默认 60s）；需要更长预算时两端同时调大。
+- `MAX_ACTIVE_ANSWERS`（默认 8）、`MAX_ANSWER_WAITERS`（默认 64）：并发冷题任务与等待者上限，超限立即返回业务失败。
+- `PROMPT_VERSION` 仅在生成规则变化时递增；`SEARCH_CACHE_VERSION` 留空即可，需手动失效缓存时填写。
 
 ### 图片题
 
@@ -44,7 +45,7 @@ VISION_MODEL=支持图片输入的模型名
 MAX_REQUEST_BYTES=33554432
 ```
 
-- `VISION_MODEL` 留空时图片题直接报错；文本模型不支持图片时填写也无效。
+- `VISION_MODEL` 留空时图片题直接报错；模型本身不支持图片输入时填写也无效。
 - OCS 单题最多 6 张图、单张解码后 3MB，base64 后上限约 24MB，32MB 留有余量。
 - 旧 `.env` 常写着 `MAX_REQUEST_BYTES=262144`，会覆盖代码默认值导致图片题被拒，需手改后重启。`check` 会对这类不可用图片配置告警。
 
@@ -74,11 +75,9 @@ OCS 通过 `GM_xmlhttpRequest` 访问本机服务，用户脚本元信息需要�
 uv run llm-ocs-bridge      # 默认 http://127.0.0.1:8009，Ctrl+C 停止
 ```
 
-修改 `.env`、端口或令牌后，重新 `check` 并重新导入 JSON。
+修改 `.env`、端口或令牌后，重新 `check` 并重新导入 JSON。SQLite 按单实例使用；升级无需清空数据库，内置缓存修订号自动隔离旧记录。
 
-SQLite 按单实例使用：不要让多个实例同时初始化同一个全新数据库。升级无需清空数据库，内置缓存修订号自动隔离旧记录。
-
-## CLI
+CLI：
 
 ```bash
 uv run llm-ocs-bridge check
@@ -88,6 +87,18 @@ DEBUG=true uv run llm-ocs-bridge    # 开发 reload
 ```
 
 所有命令读取**执行时所在目录**的 `.env`，系统环境变量优先。`clear-cache` 只要求存储配置合法，保留累计指标与错误日志。
+
+## 返回格式
+
+实时作答的响应带 `X-Search-Provider`，取值为 `exa`、`cache` 或 `llm-fallback`；答案缓存命中不带该头。
+
+| 题型 | `answer` |
+| --- | --- |
+| `single` | 选项字母（按位置编号）；选项为对/错形态时返回 `正确`/`错误` |
+| `multiple` | `#` 连接的选项字母 |
+| `judgement` | `正确`/`错误` |
+| `completion` | JSON 数组字符串，每空一个元素，保留分隔符 |
+| 空题型 | 自由文本 |
 
 ## 故障排查
 
