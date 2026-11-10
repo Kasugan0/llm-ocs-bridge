@@ -4,7 +4,7 @@
 
 - Python 3.12+、[uv](https://docs.astral.sh/uv/)
 - OpenAI 兼容服务的 API 密钥
-- 已安装的 OCS 用户脚本；Exa API 密钥（可选）
+- 已安装的 [OCS](https://docs.ocsjs.com) 用户脚本；Exa API 密钥（可选）
 
 ## 安装
 
@@ -150,7 +150,7 @@ DEBUG=true uv run llm-ocs-bridge   # 开发 reload
 | `suggestion_title` | string | OCS 5 建议题干，含 `[图片N]` 占位符 |
 | `suggestion_options` | string 或数组 | OCS 5 建议选项 |
 
-响应恒为 HTTP 200 的 OCS 契约：成功 `{"code":1,"question","answer"}`，失败 `{"code":0,"msg"}`。实时作答另带 `X-Search-Provider` 响应头（`exa`/`cache`/`llm-fallback`），答案缓存命中不带。
+响应恒为 HTTP 200 的 OCS 契约：成功 `{"code":1,"question","answer"}`，失败 `{"code":0,"msg"}`。实时作答另带 `X-Search-Provider` 响应头（`exa`/`cache`/`llm-fallback`），答案缓存命中不带。题库配置本身即 `AnswererWrapper` 结构，协议细节见 [OCS 开发文档](https://docs.ocsjs.com/docs/other/api)。
 
 验证服务可用：
 

@@ -1,6 +1,6 @@
 # llm-ocs-bridge
 
-本机运行的 OCS 搜题桥接服务：把 OCS 题目转换为可选的 Exa 检索加 OpenAI 兼容模型作答，再把结果转回 OCS 答案格式。面向单用户，默认只监听 `127.0.0.1`。
+本机运行的 [OCS](https://docs.ocsjs.com) 搜题桥接服务：把 OCS 题目转换为可选的 Exa 检索加 OpenAI 兼容模型作答，再把结果转回 OCS 答案格式。面向单用户，默认只监听 `127.0.0.1`。
 
 OCS 的题库协议是 HTTP 请求加 JavaScript handler，不能直接对接 LLM API；`check` 命令会生成可直接导入的 `AnswererWrapper` 配置，无需手写。
 
